@@ -17,6 +17,9 @@ pip install mcp==1.16.0 fastmcp==2.12.5 gradio==5.49.1 openai==2.6.1
 ```
 
 ### Execution
+
+Start app, which wraps client base class, and instantiates the server in process for STDIO transport
+
 ```bash
-python3 client.py server.py
+python3 app.py server.py
 ```
