@@ -2,7 +2,7 @@ import sys
 import json
 import gradio as gr
 from openai import OpenAI
-from mcp_permission_client_base import MCPPermissionClient
+from client import MCPPermissionClient
 
 
 class MCPPermissionHostApp(MCPPermissionClient):
@@ -83,7 +83,7 @@ class MCPPermissionHostApp(MCPPermissionClient):
                     "properties": {
                         "uri": {
                             "type": "string",
-                            "description": "The URI of the resource to read (for example, 'file://audit/log')"
+                            "description": "The URI of the resource to read, as returned by mcp_list_resources"
                         }
                     },
                     "required": ["uri"]

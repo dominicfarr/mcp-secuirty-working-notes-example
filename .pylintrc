@@ -1,0 +1,10 @@
+[TYPECHECK]
+# Gradio adds event methods such as Button.click() dynamically, so pylint can't see them.
+generated-members=gradio.*
+
+[FORMAT]
+max-line-length=100
+
+[DESIGN]
+# The client holds connection, policy, audit, pending-approval and roots state.
+max-attributes=12

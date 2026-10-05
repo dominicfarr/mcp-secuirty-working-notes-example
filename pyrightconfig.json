@@ -1,0 +1,9 @@
+{
+  "venvPath": ".",
+  "venv": "mcp_security_env",
+  "exclude": ["mcp_security_env", "**/__pycache__", ".superpowers"],
+  "executionEnvironments": [
+    { "root": "client" },
+    { "root": "server" }
+  ]
+}

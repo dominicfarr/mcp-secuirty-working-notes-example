@@ -1,0 +1,6 @@
+{
+  "read_file": "allow",
+  "write_file": "ask",
+  "delete_file": "ask",
+  "execute_command": "deny"
+}
