@@ -6,5 +6,5 @@ generated-members=gradio.*
 max-line-length=100
 
 [DESIGN]
-# The client holds connection, policy, audit, pending-approval and roots state.
-max-attributes=12
+# The client holds connection, policy, audit, pending-approval, roots and question state.
+max-attributes=15

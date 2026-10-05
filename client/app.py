@@ -1,14 +1,17 @@
 """Gradio GUI for the MCP permission client: tools and permissions."""
 
 import sys
+import json
 from pathlib import Path
 import gradio as gr
 from mcp.shared.exceptions import McpError
 from audit_view import audit_rows, CLIENT_COLUMNS, SERVER_COLUMNS
 from tools_view import (first_line, policy_label, args_template, parse_arguments, timeline_for,
                         invalid_arguments_timeline, not_pending_timeline, approval_card,
-                        root_choices, root_display, parse_root, declared_line, root_prefix)
-from client import MCPPermissionClient, ToolRequest, PROJECT_DIR, DEFAULT_ROOT
+                        root_choices, root_display, parse_root, declared_line, root_prefix,
+                        FormField, form_fields, form_content, input_header, not_waiting_timeline)
+from client import (MCPPermissionClient, ToolRequest, InputRequest, InputInvalid, PROJECT_DIR,
+                    DEFAULT_ROOT)
 
 
 # DEMO ONLY: the server's private audit log, read straight from disk. A real MCP client has no
@@ -30,13 +33,36 @@ APP_CSS = f"""
 """
 
 
-def flow_outputs(timeline: str, pending: ToolRequest | None = None):
-    """Outputs shared by send/approve/reject: timeline, pending id, card, card text, Send."""
+def flow_outputs(timeline: str, pending: ToolRequest | None = None,
+                 question: InputRequest | None = None):
+    """Outputs shared by send/approve/reject/answer: timeline, pending id, approval card, card
+    text, Send; then the input card: question, visibility, heading, schema, errors."""
     return (timeline,
             pending.request_id if pending else "",
             gr.update(visible=pending is not None),
             approval_card(pending) if pending else "",
-            gr.update(interactive=pending is None))
+            gr.update(interactive=pending is None and question is None),
+            {"id": question.input_id, "schema": question.schema} if question else None,
+            gr.update(visible=question is not None),
+            input_header(question) if question else "",
+            json.dumps(question.schema, indent=2) if question else "",
+            "")
+
+
+def field_widget(form_field: FormField):
+    """The Gradio input for one field of the server's schema."""
+    if form_field.kind == "checkbox":
+        return gr.Checkbox(label=form_field.label, info=form_field.hint,
+                           value=bool(form_field.default))
+    if form_field.kind in ("number", "integer"):
+        return gr.Number(label=form_field.label, info=form_field.hint, value=form_field.default,
+                         minimum=form_field.minimum, maximum=form_field.maximum,
+                         precision=0 if form_field.kind == "integer" else None)
+    if form_field.kind == "radio":
+        return gr.Radio(choices=list(form_field.choices), label=form_field.label,
+                        info=form_field.hint, value=form_field.default)
+    return gr.Textbox(label=form_field.label, info=form_field.hint,
+                      value=form_field.default or "")
 
 
 class MCPPermissionClientApp(MCPPermissionClient):
@@ -74,7 +100,7 @@ class MCPPermissionClientApp(MCPPermissionClient):
 
         outcome = await self.request_tool(tool_name, arguments)
         pending = outcome.request if outcome.decision == "ASK" else None
-        return flow_outputs(timeline_for(outcome), pending)
+        return flow_outputs(timeline_for(outcome), pending, outcome.input_request)
 
     async def gui_approve(self, pending_id: str):
         """Approve the pending request by id; the client sends its stored copy."""
@@ -82,7 +108,7 @@ class MCPPermissionClientApp(MCPPermissionClient):
             outcome = await self.approve(pending_id)
         except KeyError:
             return flow_outputs(not_pending_timeline(pending_id))
-        return flow_outputs(timeline_for(outcome))
+        return flow_outputs(timeline_for(outcome), None, outcome.input_request)
 
     def gui_reject(self, pending_id: str):
         """Reject the pending request by id; nothing is sent."""
@@ -92,6 +118,17 @@ class MCPPermissionClientApp(MCPPermissionClient):
             return flow_outputs(not_pending_timeline(pending_id))
         return flow_outputs(timeline_for(outcome))
 
+
+    async def gui_answer_input(self, input_id: str, action: str, content: dict | None = None):
+        """Send the user's answer to the server's question. If it breaks the schema, keep the
+        form as it is and show the problems."""
+        try:
+            outcome = await self.answer_input(input_id, action, content)
+        except InputInvalid as e:
+            return (gr.skip(),) * 9 + ("⚠ " + "  \n⚠ ".join(e.errors),)
+        except KeyError:
+            return flow_outputs(not_waiting_timeline(input_id))
+        return flow_outputs(timeline_for(outcome), None, outcome.input_request)
     def gui_load_roots(self):
         """Root presets (workspace and its subfolders) and the root currently declared."""
         return (gr.update(choices=root_choices(DEFAULT_ROOT),
@@ -162,7 +199,6 @@ class MCPPermissionClientApp(MCPPermissionClient):
     def _build_tools_tab(self, interface: gr.Blocks):
         """Build the Tools tab: pick a tool, send a request, watch the client policy decide."""
         gr.Markdown("### Call tools through the client's permission policy")
-        tools_status = gr.Markdown(visible=False)
         gr.Markdown("Tool and Description are reported by the MCP server (`tools/list`). "
                     "Policy is this client's own setting: its built-in default, or your "
                     "override in `permissions.json`.")
@@ -173,10 +209,7 @@ class MCPPermissionClientApp(MCPPermissionClient):
                     "(HTTP) server would run, and write, on its own machine, where your `file://` "
                     "roots would mean nothing: file roots are mainly for local servers.")
         self._build_root_control(interface)
-        tool_table = gr.Dataframe(
-            headers=["Tool (server)", "Description (server)", "Policy (client)"],
-            interactive=False, label="Tools (click a row to select)")
-        refresh_btn = gr.Button("↻ Refresh", size="sm")
+        tool_table = self._build_tool_table(interface)
 
         selected_tool = gr.Textbox(label="Selected tool", interactive=False)
         tool_args = gr.Textbox(label="Arguments (JSON)", lines=4)
@@ -190,15 +223,65 @@ class MCPPermissionClientApp(MCPPermissionClient):
                 approve_btn = gr.Button("Approve", variant="primary", elem_classes=["approve-btn"])
                 reject_btn = gr.Button("Reject", variant="stop")
 
-        interface.load(fn=self.gui_load_tools, outputs=[tool_table, tools_status])
-        refresh_btn.click(fn=self.gui_load_tools, outputs=[tool_table, tools_status])
+        flow = []  # filled below; the input card's buttons are wired before the list is complete
+        input_card = self._build_input_card(flow)
+        flow.extend([timeline, pending_id, approval_group, approval_text, send_btn, *input_card])
+
         tool_table.select(fn=self.gui_select_tool, inputs=pending_id,
                           outputs=[selected_tool, tool_args, send_btn])
 
-        flow = [timeline, pending_id, approval_group, approval_text, send_btn]
         send_btn.click(fn=self.gui_send_request, inputs=[selected_tool, tool_args], outputs=flow)
         approve_btn.click(fn=self.gui_approve, inputs=pending_id, outputs=flow)
         reject_btn.click(fn=self.gui_reject, inputs=pending_id, outputs=flow)
+
+    def _build_tool_table(self, interface: gr.Blocks):
+        """The tool table (loaded on page load, with Refresh) and its status line."""
+        tools_status = gr.Markdown(visible=False)
+        tool_table = gr.Dataframe(
+            headers=["Tool (server)", "Description (server)", "Policy (client)"],
+            interactive=False, label="Tools (click a row to select)")
+        refresh_btn = gr.Button("↻ Refresh", size="sm")
+        interface.load(fn=self.gui_load_tools, outputs=[tool_table, tools_status])
+        refresh_btn.click(fn=self.gui_load_tools, outputs=[tool_table, tools_status])
+        return tool_table
+
+    def _build_input_card(self, flow: list):
+        """The card for a server's question (elicitation): a form generated from its schema.
+        Returns its outputs in flow order: question, card, heading, schema, errors."""
+        question_state = gr.State(None)
+        with gr.Group(visible=False) as input_group:
+            heading = gr.Markdown()
+            with gr.Accordion("Schema sent by the server", open=False):
+                schema_view = gr.Code(language="json", label="Schema sent by the server")
+            errors = gr.Markdown()
+
+            @gr.render(inputs=question_state, triggers=[question_state.change])
+            def render_form(question):
+                if not question:
+                    return
+                fields = form_fields(question["schema"])
+                widgets = [field_widget(form_field) for form_field in fields]
+                with gr.Row():
+                    accept_btn = gr.Button("Accept", variant="primary",
+                                           elem_classes=["approve-btn"])
+                    decline_btn = gr.Button("Decline", variant="stop")
+                    cancel_btn = gr.Button("Cancel", variant="secondary")
+
+                async def accept(*values):
+                    return await self.gui_answer_input(question["id"], "accept",
+                                                       form_content(fields, values))
+
+                async def decline():
+                    return await self.gui_answer_input(question["id"], "decline")
+
+                async def cancel():
+                    return await self.gui_answer_input(question["id"], "cancel")
+
+                accept_btn.click(accept, inputs=widgets, outputs=flow)
+                decline_btn.click(decline, outputs=flow)
+                cancel_btn.click(cancel, outputs=flow)
+
+        return question_state, input_group, heading, schema_view, errors
 
     def _build_root_control(self, interface: gr.Blocks):
         """Root picker: the folder this client declares to the server as its MCP root."""

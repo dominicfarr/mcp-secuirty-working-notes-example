@@ -28,8 +28,9 @@ In scope:
 
 Out of scope (separate conversations):
 
-- MCP elicitation (server-initiated `elicitation/create`). The unused `request_elicitation()` stub
-  in `client.py` is left as is.
+- MCP elicitation (server-initiated `elicitation/create`): since implemented, see
+  `docs/superpowers/specs/2026-10-05-elicitation-design.md`. The old auto-approving
+  `request_elicitation()` stub was removed.
 - The Permissions tab. (The Resources and Prompts tabs were removed on 2026-10-03; resources
   and prompts are Part 2 topics, see README "Project structure".)
 - `host.py` (LLM host, work in progress). See Known follow-ups.
@@ -226,6 +227,10 @@ Behaviour:
 
 ## Change history
 
+- 2026-10-05: Tools tab gains a "Server asks for input" card with a form generated from the
+  server's schema; the timeline shows questions and answers (see
+  `docs/superpowers/specs/2026-10-05-elicitation-design.md`). The tool table's status line now sits
+  directly above the table.
 - 2026-10-05: colour carries meaning: theme primary colour blue (neutral actions), Approve green,
   Reject red (Gradio `stop` variant).
 - 2026-10-05: Audit tab tables stacked vertically at full width, each 320 px high with

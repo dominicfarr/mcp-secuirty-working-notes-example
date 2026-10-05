@@ -12,7 +12,7 @@ A simple app provides a GUI to view the server's capabilities (tools) and the cl
 
 The project is organised by threat rather than by MCP primitive:
 
-- **Part 1: deterministic controls (`client/app.py`, no LLM).** What the client and server enforce regardless of who makes the request: tool permission policies, binding human-in-the-loop approval, audit logs on both sides, server-side path validation, and roots. Runs with no LLM and no token cost.
+- **Part 1: deterministic controls (`client/app.py`, no LLM).** What the client and server enforce regardless of who makes the request: tool permission policies, binding human-in-the-loop approval, audit logs on both sides, server-side path validation, roots, and elicitation (server-initiated structured input). Runs with no LLM and no token cost.
 - **Part 2: model in the loop (`client/host.py`, planned).** The same client, server and policies with an LLM making the calls. Covers the risks that only exist when a model reads what a server sends: tool poisoning, prompt injection through tool results, resources and prompts, and changed tool definitions. Resources and prompts are covered here, as injection routes.
 - **Part 3: remote-server authorization (separate repo, not started).** OAuth and token handling for MCP servers over HTTP.
 
@@ -35,7 +35,7 @@ Each side has its own `audit.py`; the two copies write the same JSON-lines forma
 python3 -m venv mcp_security_env
 source mcp_security_env/bin/activate
 # openai: only needed for host.py
-pip install mcp==1.16.0 fastmcp==2.12.5 gradio==5.49.1 openai==2.6.1 pydantic==2.11.10
+pip install mcp==1.16.0 fastmcp==2.12.5 gradio==5.49.1 openai==2.6.1 pydantic==2.11.10 jsonschema==4.26.0
 ```
 
 ### Launch
@@ -61,16 +61,27 @@ File paths are always relative to `workspace/`; a root restricts where they may 
 A tool call doesn't carry the root. Roots go the other way: the server asks the client for them during the call. The Tools tab's timeline shows this round trip.
 
 ```
-1. client → server   initialize         "I support roots"            (once, when connecting)
-2. client → server   tools/call         write_file(filepath, content)
-3. server → client   roots/list         "which folders may I use?"   (the server asks back, mid-call)
-4. client → server   roots/list result  ["file:///…/workspace/ROOT"]
-5. server → client   tools/call result  "Successfully wrote …" or "Access denied …"
+1. client → server   initialize           "I support roots and elicitation"  (once, when connecting)
+2. client → server   tools/call           delete_file(filepath)              ← call opens
+3. server → client   roots/list           "which folders may I use?"         (the client answers itself)
+4. client → server   roots/list result    ["file:///…/workspace"]
+5. server → client   elicitation/create   message + schema                   (for the human)
+6. client → server   elicitation result   {action: "accept", content: {…}}
+7. server → client   tools/call result    "Deleted …" or "Access denied …"   ← call closes
 ```
 
 **Where things run.** This app is the MCP client. The server is a separate process it starts on this machine over stdio, so both see the same disk, and a file is written wherever the server process runs: here, your machine. A remote (HTTP) server would run, and write, on its own machine, where `file://` roots naming folders on your machine would mean nothing. File roots are mainly for local servers.
 
 **What roots protect.** Roots protect the machine the server runs on, which for a local server is the user's machine: the client says "only touch this project folder", for example so that a prompt-injected `read_file("~/.ssh/id_rsa")` is refused. They only work if the server honours them; a malicious server ignores them, so the real protection for the user is not running untrusted servers, plus OS permissions and sandboxing. Roots don't protect the server; it protects itself with its own configuration (here, the `workspace/` limit).
+
+### Elicitation: server-initiated structured input
+
+Sometimes the server needs something only the user can give, and only finds out while it's carrying out the call. `delete_file` asks the user to confirm: it sends a message ("Confirm deletion of notes.txt (2.3 KB, modified …)") and a **schema** describing the fields it needs, their types and validation rules (`confirm_name`, `reason` of 5–200 characters, `keep_backup`). The client builds a form from that schema, checks the user's input against it, and sends back structured data; the user can also decline or cancel. The tool call waits, paused, until the answer arrives.
+
+- **Around the caller.** The question goes through the client to the human, not to whatever made the call. A confirmation passed as a tool argument could be filled in by the caller (in Part 2, an LLM); an elicitation answer can't.
+- **Two layers of consent.** The client's permission policy decides whether the call is sent at all; the server's question confirms details only the server knows. `delete_file` defaults to `deny` in the client, so set it to `ask` or `allow` to try this.
+- **Validate on both sides.** The client checks the answer against the schema before sending it; the server checks it again, because it can't trust the client, and also checks what a schema can't express (`confirm_name` must match the file path).
+- **Fail closed.** A client that can't be asked (no elicitation support) can't delete; a question left unanswered for 2 minutes is treated as cancelled.
 
 The **Permissions** tab sets this client's policy for each tool; its tool list loads on page load.
 

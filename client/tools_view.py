@@ -1,11 +1,13 @@
 """Pure helpers for the Tools tab: argument parsing, schema templates and the step timeline."""
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from mcp.types import TextContent
 from audit import summarise_arguments
 from permissions import DEFAULT_PERMISSIONS
-from client import ToolOutcome, ToolRequest, REASON_USER_APPROVED, REASON_POLICY_CHANGED
+from client import (ToolOutcome, ToolRequest, InputRequest, REASON_USER_APPROVED,
+                    REASON_POLICY_CHANGED)
 
 DONE, WAIT, FAIL, TODO = "✓", "⏸", "✗", "·"
 
@@ -46,6 +48,80 @@ def parse_root(value: str) -> str | None:
 def declared_line(uris: list[str]) -> str:
     """The line under the dropdown: exactly what the client sends to the server."""
     return "Declared: " + ", ".join(f"`{uri}`" for uri in uris)
+
+
+@dataclass(frozen=True)
+class FormField:
+    """One input in the form the client builds from the server's schema."""
+    name: str
+    label: str
+    kind: str  # "text" | "checkbox" | "number" | "integer" | "radio"
+    required: bool
+    hint: str
+    default: object = None
+    choices: tuple = ()
+    minimum: float | None = None
+    maximum: float | None = None
+
+
+def field_hint(spec: dict, required: bool) -> str:
+    """The rules for one field, for people: 'required · 5–200 characters · <description>'."""
+    rules = ["required"] if required else []
+    shortest, longest = spec.get("minLength"), spec.get("maxLength")
+    if shortest is not None and longest is not None:
+        rules.append(f"{shortest}–{longest} characters")
+    elif shortest is not None:
+        rules.append(f"at least {shortest} characters")
+    elif longest is not None:
+        rules.append(f"at most {longest} characters")
+    if "minimum" in spec or "maximum" in spec:
+        rules.append(f"{spec.get('minimum', '…')}–{spec.get('maximum', '…')}")
+    if spec.get("format"):
+        rules.append(f"format: {spec['format']}")
+    if spec.get("description"):
+        rules.append(spec["description"])
+    return " · ".join(rules)
+
+
+def form_fields(schema: dict) -> list[FormField]:
+    """The form for a server's schema (elicitation): one field per property, in order."""
+    required = set(schema.get("required", []))
+    kinds = {"boolean": "checkbox", "number": "number", "integer": "integer"}
+    fields = []
+    for name, spec in schema.get("properties", {}).items():
+        kind = "radio" if spec.get("enum") else kinds.get(spec.get("type"), "text")
+        label = spec.get("title", name) + (" *" if name in required else "")
+        fields.append(FormField(name, label, kind, name in required,
+                                field_hint(spec, name in required), spec.get("default"),
+                                tuple(spec.get("enum", ())), spec.get("minimum"),
+                                spec.get("maximum")))
+    return fields
+
+
+def form_content(fields: list[FormField], values) -> dict:
+    """The form's values as the content to send. Empty values are left out (so a missing
+    required field is reported as missing); integers become whole numbers."""
+    content = {}
+    for form_field, value in zip(fields, values):
+        if value is None or value == "":
+            continue
+        content[form_field.name] = int(value) if form_field.kind == "integer" else value
+    return content
+
+
+def input_header(question: InputRequest) -> str:
+    """The input card's heading: which server is asking, and its message."""
+    return (f'**Server "{question.server_name}" asks (`elicitation/create`)**\n\n'
+            f"{question.message}")
+
+
+def answer_line(answer: str, content: dict | None) -> str:
+    """How the user's answer to a server's question appears in the timeline."""
+    if answer == "accept":
+        return f"✓ You answered: accept {json.dumps(content)}"
+    if answer in ("decline", "cancel"):
+        return f"✗ You answered: {answer}"
+    return f"✗ {answer[0].upper()}{answer[1:]}"
 
 
 def first_line(text: str | None) -> str:
@@ -143,6 +219,15 @@ def timeline_for(outcome: ToolOutcome) -> str:
         answered = ", ".join(f"`{uri}`" for uri in outcome.roots_answered) or "(no roots)"
         steps.append((None, "↩ Server asked the client for its roots (`roots/list`); "
                             f"client answered: {answered}"))
+    for question, answer, content in outcome.inputs:
+        steps.append((None, f"⏸ Server asked for input (`elicitation/create`): {question}"))
+        steps.append((None, answer_line(answer, content)))
+    if outcome.input_request is not None:
+        steps.append((None, "⏸ Server asked for input (`elicitation/create`): "
+                            f"{outcome.input_request.message}"))
+        steps.append((None, "⏸ Waiting for your answer"))
+        steps.append((TODO, "Result"))
+        return render_timeline(header, steps)
     steps.append((FAIL, "Error") if outcome.is_error else (DONE, "Result"))
     return render_timeline(header, steps, content_text(outcome.content))
 
@@ -157,6 +242,11 @@ def not_pending_timeline(request_id: str) -> str:
     """Timeline when approve/reject names a request that is no longer pending."""
     return render_timeline(f"Request {request_id}",
                            [(FAIL, f"Request {request_id} is no longer pending")])
+
+
+def not_waiting_timeline(input_id: str) -> str:
+    """Timeline when an answer names a question the server is no longer waiting for."""
+    return render_timeline(f"Question {input_id}", [(FAIL, "This question is no longer waiting")])
 
 
 def approval_card(request: ToolRequest) -> str:
