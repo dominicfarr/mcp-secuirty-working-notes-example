@@ -141,9 +141,16 @@ tests (GUI tests call handlers and inspect the interface configuration), and `cl
 - On push and pull request to `main`.
 - Matrix: `ubuntu-latest` and `macos-latest`, Python 3.13.
 - Steps: check out; set up Python; `pip install -r requirements-dev.txt`; pylint on `client/` and
-  `server/` (run from inside each folder with `--rcfile=../.pylintrc`, excluding `host.py`); `pytest`.
-- A status badge at the top of the README for `dominicfarr/mcp-secuirty-working-notes-example`.
-- Pylint is a CI dependency too, so it is pinned in `requirements-dev.txt`.
+  `server/` (run from inside each folder with `--rcfile=../.pylintrc`, excluding `host.py`); `pytest`
+  under `coverage` (`.coveragerc`: follows the server subprocess, maps the temporary copy back to
+  `client/` and `server/`); on Ubuntu only, a SonarQube Cloud scan (`sonar-project.properties`) that
+  fails the run if the quality gate fails. The checkout fetches full history for Sonar.
+- Badges at the top of the README: CI, plus Sonar's quality gate, coverage, maintainability and
+  security ratings.
+- Pylint and coverage are CI dependencies too, so they are pinned in `requirements-dev.txt`.
+- The same lint and tests run locally before every push from `.githooks/pre-push`
+  (`git config core.hooksPath .githooks`); `main` takes direct pushes, so the hook is the gate and
+  CI the backstop.
 
 ### 4. Docs and retiring the checks
 
@@ -190,6 +197,9 @@ tests (GUI tests call handlers and inspect the interface configuration), and `cl
   client's real elicitation handler (it previously passed with the decline check removed); the CI
   workflow gains `permissions: contents: read`, a 15-minute job timeout, and a cache key covering
   both requirements files.
+- 2026-10-05: pre-push hook (`.githooks/pre-push`) and SonarQube Cloud analysis with coverage
+  (85% at introduction; `client/host.py` excluded from coverage until Part 2 rewrites it). Lint
+  globs prefixed with `./` (Sonar S6573).
 - Deferred minor issues: actions pinned by tag rather than commit SHA; `make_app` teardown stops at
   the first failing cleanup; the path-leak check could also look for the temp folder's name; the
   isolation tests don't check the server log and one depends on test order; the slow-roots test

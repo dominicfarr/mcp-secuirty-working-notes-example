@@ -1,0 +1,26 @@
+# Coverage for the CI run that feeds SonarQube Cloud.
+# The tests run the client and server from a temporary copy of the project (see tests/helpers.py),
+# and the server runs as a child process, so coverage follows subprocesses and maps the copy's
+# paths back to client/ and server/ when the data is combined.
+
+[run]
+parallel = true
+patch = subprocess
+sigterm = true
+include =
+    */mcp-part1-tests-*/client/*
+    */mcp-part1-tests-*/server/*
+
+[paths]
+client =
+    client/
+    */mcp-part1-tests-*/client/
+server =
+    server/
+    */mcp-part1-tests-*/server/
+
+[report]
+show_missing = true
+
+[xml]
+output = coverage.xml

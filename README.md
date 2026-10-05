@@ -1,6 +1,10 @@
 # mcp-secuirty-working-notes-example
 
 [![tests](https://github.com/dominicfarr/mcp-secuirty-working-notes-example/actions/workflows/tests.yml/badge.svg)](https://github.com/dominicfarr/mcp-secuirty-working-notes-example/actions/workflows/tests.yml)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=dominicfarr_mcp-secuirty-working-notes-example&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=dominicfarr_mcp-secuirty-working-notes-example)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=dominicfarr_mcp-secuirty-working-notes-example&metric=coverage)](https://sonarcloud.io/summary/new_code?id=dominicfarr_mcp-secuirty-working-notes-example)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=dominicfarr_mcp-secuirty-working-notes-example&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=dominicfarr_mcp-secuirty-working-notes-example)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=dominicfarr_mcp-secuirty-working-notes-example&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=dominicfarr_mcp-secuirty-working-notes-example)
 
 A simple reference for the MCP security model, focused on client-side permissions. It shows the client's permission policy for each tool, and how every tool call to the server is allowed, denied or held for your approval according to that policy.
 
@@ -70,6 +74,12 @@ pytest -m "not integration"    # only the tests that don't start a server (secon
 The tests are grouped by security control (`tests/test_permissions.py`, `test_approval.py`, `test_audit.py`, `test_workspace.py`, `test_roots.py`, `test_elicitation.py`, `test_connection.py`, `test_gui.py`) and each test is named after the guarantee it proves, so the files read as a list of what Part 1 promises. They run against a temporary copy of `client/` and `server/`, so they never touch your `workspace/`, logs or `permissions.json`. GitHub Actions runs pylint and the tests on Ubuntu and macOS for every push and pull request.
 
 `main` is the trunk and takes direct pushes, so the same checks also run locally first: `.githooks/pre-push` (enabled by the `core.hooksPath` line in Setup) runs pylint, then the unit tests, then the integration tests, and stops the push at the first failure. CI stays as the backstop for anything the hook can't catch, such as macOS-only failures or a `git push --no-verify`.
+
+CI also runs the tests under `coverage` (settings in `.coveragerc`) and sends the report to [SonarQube Cloud](https://sonarcloud.io/summary/new_code?id=dominicfarr_mcp-secuirty-working-notes-example), configured in `sonar-project.properties`. A failed quality gate fails the CI run. Coverage follows the server child process and maps the tests' temporary copy back to `client/` and `server/`. To see it locally:
+
+```bash
+coverage run -m pytest && coverage combine && coverage report
+```
 
 ### How a tool call travels
 
