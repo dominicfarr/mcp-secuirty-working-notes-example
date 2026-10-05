@@ -1,5 +1,5 @@
 mcp==1.16.0
-fastmcp==2.12.5
+fastmcp==3.2.0
 gradio==5.49.1
 pydantic==2.11.10
 jsonschema==4.26.0
