@@ -212,10 +212,7 @@ Behaviour:
 - **`host.py`** still calls `call_tool_with_permission()`, which this change removes. It will
   import but its tool calls fail at runtime until it is migrated to `request_tool()` /
   `approve()` / `reject()` in its own piece of work.
-- **Tests** (deferred): unit tests for the client flow with a fake session (deny/allow/ask,
-  invalid policy, single-use approve, outcome mutation, reject, policy changed before approval,
-  shared `request_id` in audit), integration tests against `server.py` over stdio (including a
-  server that crashes mid-call, and blank/folder paths). Requires `pytest` as a dev dependency.
+- **Tests:** Covered by the Part 1 test suite (`tests/`, see `docs/superpowers/specs/2026-10-05-part1-tests-design.md`).
 - **Deferred minor issues** from the final review:
   - Double-clicking Approve/Reject can replace the success timeline with "no longer pending"
     (security unaffected).

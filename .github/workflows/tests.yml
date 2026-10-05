@@ -1,0 +1,40 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege: the workflow only needs to read the repository
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # A hung test fails the run instead of holding a runner for hours
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Install
+        run: python -m pip install -r requirements-dev.txt
+      - name: Lint client
+        working-directory: client
+        run: python -m pylint --rcfile=../.pylintrc $(ls *.py | grep -v host.py)
+      - name: Lint server
+        working-directory: server
+        run: python -m pylint --rcfile=../.pylintrc *.py
+      - name: Test
+        run: python -m pytest

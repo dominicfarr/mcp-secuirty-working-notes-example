@@ -1,5 +1,7 @@
 # mcp-secuirty-working-notes-example
 
+[![tests](https://github.com/dominicfarr/mcp-secuirty-working-notes-example/actions/workflows/tests.yml/badge.svg)](https://github.com/dominicfarr/mcp-secuirty-working-notes-example/actions/workflows/tests.yml)
+
 A simple reference for the MCP security model, focused on client-side permissions. It shows the client's permission policy for each tool, and how every tool call to the server is allowed, denied or held for your approval according to that policy.
 
 Both client and server are local processes and the MCP transport mechanism is STDIO.
@@ -34,9 +36,10 @@ Each side has its own `audit.py`; the two copies write the same JSON-lines forma
 ```bash
 python3 -m venv mcp_security_env
 source mcp_security_env/bin/activate
-# openai: only needed for host.py
-pip install mcp==1.16.0 fastmcp==2.12.5 gradio==5.49.1 openai==2.6.1 pydantic==2.11.10 jsonschema==4.26.0
+pip install -r requirements-dev.txt
 ```
+
+`requirements.txt` holds the runtime packages (`openai` is only needed for `client/host.py`); `requirements-dev.txt` adds `pytest` and `pylint`.
 
 ### Launch
 
@@ -55,6 +58,15 @@ The **Tools** tab loads the server's tools on page load. The table shows what th
 Above the table, **Client root** sets the folder this client declares to the server as an MCP root (`workspace/`, one of its subfolders, `/ (whole disk)`, or a typed path); the line under it shows the exact URI sent. The server asks for the client's roots on every file tool call and works only where a root overlaps its own `workspace/`. A root inside the workspace narrows the server; a wider root such as `/` gives it nothing extra; a root elsewhere leaves it nothing. Roots are advisory in MCP: the client only declares them, and it is the server's own code that enforces them.
 
 File paths are always relative to `workspace/`; a root restricts where they may land but doesn't move the starting folder. With the root `workspace/ROOT/`, `ROOT/a.txt` is allowed and `a.txt` (which means `workspace/a.txt`) is refused. Selecting a tool fills `filepath` with the root's prefix to make this visible.
+
+### Tests
+
+```bash
+pytest                         # everything (about 1 minute)
+pytest -m "not integration"    # only the tests that don't start a server (seconds)
+```
+
+The tests are grouped by security control (`tests/test_permissions.py`, `test_approval.py`, `test_audit.py`, `test_workspace.py`, `test_roots.py`, `test_elicitation.py`, `test_connection.py`, `test_gui.py`) and each test is named after the guarantee it proves, so the files read as a list of what Part 1 promises. They run against a temporary copy of `client/` and `server/`, so they never touch your `workspace/`, logs or `permissions.json`. GitHub Actions runs pylint and the tests on Ubuntu and macOS for every push and pull request.
 
 ### How a tool call travels
 

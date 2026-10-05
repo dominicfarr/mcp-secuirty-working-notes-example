@@ -162,7 +162,7 @@ waiting:
 
 ## Checks
 
-Tests remain deferred; each change is verified by a check script that fails first.
+Covered by the Part 1 test suite (`tests/`, see `docs/superpowers/specs/2026-10-05-part1-tests-design.md`). (The cases below were first verified by check scripts during implementation.)
 
 - **Server** (real server, scripted client): accept deletes; `keep_backup` renames to `.bak` (and
   never overwrites an existing one); decline, cancel and a name mismatch refuse; a client without

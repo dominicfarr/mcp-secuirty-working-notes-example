@@ -119,7 +119,7 @@ Declared: file:///Users/dom/.../workspace/projects
 
 ## Checks
 
-Tests remain deferred; as before, each change is verified by a check script that fails first.
+Covered by the Part 1 test suite (`tests/`, see `docs/superpowers/specs/2026-10-05-part1-tests-design.md`). (The cases below were first verified by check scripts during implementation.)
 
 - **Server** (real server, client with configurable roots): narrowed root allows inside and refuses
   outside; `/` behaves like `workspace/`; a root outside the workspace refuses everything; an empty
