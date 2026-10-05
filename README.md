@@ -37,6 +37,7 @@ Each side has its own `audit.py`; the two copies write the same JSON-lines forma
 python3 -m venv mcp_security_env
 source mcp_security_env/bin/activate
 pip install -r requirements-dev.txt
+git config core.hooksPath .githooks   # run lint and tests before every push
 ```
 
 `requirements.txt` holds the runtime packages (`openai` is only needed for `client/host.py`); `requirements-dev.txt` adds `pytest` and `pylint`.
@@ -67,6 +68,8 @@ pytest -m "not integration"    # only the tests that don't start a server (secon
 ```
 
 The tests are grouped by security control (`tests/test_permissions.py`, `test_approval.py`, `test_audit.py`, `test_workspace.py`, `test_roots.py`, `test_elicitation.py`, `test_connection.py`, `test_gui.py`) and each test is named after the guarantee it proves, so the files read as a list of what Part 1 promises. They run against a temporary copy of `client/` and `server/`, so they never touch your `workspace/`, logs or `permissions.json`. GitHub Actions runs pylint and the tests on Ubuntu and macOS for every push and pull request.
+
+`main` is the trunk and takes direct pushes, so the same checks also run locally first: `.githooks/pre-push` (enabled by the `core.hooksPath` line in Setup) runs pylint, then the unit tests, then the integration tests, and stops the push at the first failure. CI stays as the backstop for anything the hook can't catch, such as macOS-only failures or a `git push --no-verify`.
 
 ### How a tool call travels
 

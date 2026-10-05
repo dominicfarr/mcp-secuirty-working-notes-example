@@ -1,0 +1,22 @@
+#!/bin/sh
+# Runs the CI checks before a push leaves this machine, cheapest first, and
+# stops at the first failure. Skip in an emergency with: git push --no-verify
+set -e
+
+cd "$(git rev-parse --show-toplevel)"
+
+# Prefer the project venv so the hook works without activating it first
+PYTHON=python3
+[ -x mcp_security_env/bin/python ] && PYTHON=mcp_security_env/bin/python
+
+echo "pre-push: lint client"
+(cd client && "../$PYTHON" -m pylint --rcfile=../.pylintrc $(ls *.py | grep -v host.py))
+
+echo "pre-push: lint server"
+(cd server && "../$PYTHON" -m pylint --rcfile=../.pylintrc *.py)
+
+echo "pre-push: unit tests"
+"$PYTHON" -m pytest -x -q -m "not integration"
+
+echo "pre-push: integration tests"
+"$PYTHON" -m pytest -x -q -m integration
