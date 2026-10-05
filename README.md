@@ -44,7 +44,13 @@ pip install -r requirements-dev.txt
 git config core.hooksPath .githooks   # run lint and tests before every push
 ```
 
-`requirements.txt` holds the runtime packages (`openai` is only needed for `client/host.py`); `requirements-dev.txt` adds `pytest` and `pylint`.
+`requirements.txt` holds the runtime packages (`openai` is only needed for `client/host.py`); `requirements-dev.txt` adds `pytest`, `pylint` and `coverage`.
+
+CI installs from `requirements-dev.lock` instead: every package, including transitive ones, pinned with its hashes and installed only from wheels, so no package's setup script runs. After changing either requirements file, regenerate the lock (CI fails if a pinned version is missing from it, for example on a Dependabot PR):
+
+```bash
+uv pip compile --universal --generate-hashes --python-version 3.13 requirements-dev.txt -o requirements-dev.lock
+```
 
 ### Launch
 

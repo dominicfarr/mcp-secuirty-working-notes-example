@@ -140,7 +140,9 @@ tests (GUI tests call handlers and inspect the interface configuration), and `cl
 `.github/workflows/tests.yml`:
 - On push and pull request to `main`.
 - Matrix: `ubuntu-latest` and `macos-latest`, Python 3.13.
-- Steps: check out; set up Python; `pip install -r requirements-dev.txt`; pylint on `client/` and
+- Steps: check out; set up Python; check every `==` pin in the requirements files is in
+  `requirements-dev.lock`; `pip install --require-hashes --only-binary :all: -r
+  requirements-dev.lock` (hashed, universal lock from `uv pip compile`); pylint on `client/` and
   `server/` (run from inside each folder with `--rcfile=../.pylintrc`, excluding `host.py`); `pytest`
   under `coverage` (`.coveragerc`: follows the server subprocess, maps the temporary copy back to
   `client/` and `server/`); on Ubuntu only, a SonarQube Cloud scan (`sonar-project.properties`) that
@@ -198,9 +200,10 @@ tests (GUI tests call handlers and inspect the interface configuration), and `cl
   workflow gains `permissions: contents: read`, a 15-minute job timeout, and a cache key covering
   both requirements files.
 - 2026-10-05: pre-push hook (`.githooks/pre-push`) and SonarQube Cloud analysis with coverage
-  (85% at introduction; `client/host.py` excluded from coverage until Part 2 rewrites it). Lint
-  globs prefixed with `./` (Sonar S6573).
-- Deferred minor issues: actions pinned by tag rather than commit SHA; `make_app` teardown stops at
+  (85% at introduction; the stale `client/host.py` excluded from analysis until Part 2 rewrites
+  it). Lint globs prefixed with `./` (Sonar S6573); actions pinned to commit SHAs (Sonar S7637); CI installs from a
+  hashed lock, wheels only (Sonar S8544, S8541).
+- Deferred minor issues: `make_app` teardown stops at
   the first failing cleanup; the path-leak check could also look for the temp folder's name; the
   isolation tests don't check the server log and one depends on test order; the slow-roots test
   could wait 7 s instead of 10; `tests/` is not linted.
