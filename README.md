@@ -1,4 +1,4 @@
-# mcp-secuirty-working-notes-example
+# MCP Secuirty Reference
 
 [![tests](https://github.com/dominicfarr/mcp-secuirty-working-notes-example/actions/workflows/tests.yml/badge.svg)](https://github.com/dominicfarr/mcp-secuirty-working-notes-example/actions/workflows/tests.yml)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=dominicfarr_mcp-secuirty-working-notes-example&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=dominicfarr_mcp-secuirty-working-notes-example)
