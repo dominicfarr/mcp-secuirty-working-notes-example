@@ -6,6 +6,8 @@
 [![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=dominicfarr_mcp-secuirty-working-notes-example&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=dominicfarr_mcp-secuirty-working-notes-example)
 [![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=dominicfarr_mcp-secuirty-working-notes-example&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=dominicfarr_mcp-secuirty-working-notes-example)
 
+Write-up: [MCP Security series](https://www.domfarr.com/2026/10/01/mcp-security.html), five posts walking through Part 1 with links back to this code.
+
 A simple reference for the MCP security model, focused on client-side permissions. It shows the client's permission policy for each tool, and how every tool call to the server is allowed, denied or held for your approval according to that policy.
 
 Both client and server are local processes and the MCP transport mechanism is STDIO.
