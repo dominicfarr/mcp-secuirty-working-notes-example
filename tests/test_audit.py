@@ -6,7 +6,8 @@ import pytest
 
 from audit import AuditLog  # the client's copy: only client/ is importable
 from audit_view import audit_rows
-from helpers import CLIENT_LOG, SERVER_LOG, WORKSPACE, client_log, server_log
+from helpers import (CLIENT_LOG, SERVER_LOG, WORKSPACE, call_server, client_log,
+                     elicitation_answer, server_log)
 
 
 @pytest.mark.integration
@@ -58,12 +59,15 @@ async def test_tool_context_is_not_logged(make_app):
     assert server_log()[0]["args"] == {"filepath": "a.txt"}
 
 
-def test_root_changes_are_audited(make_client):
+@pytest.mark.anyio
+async def test_folder_changes_are_audited(make_client):
+    # Recorded in full however long the path: it is what the server was allowed to touch
     client, _ = make_client()
-    uris = client.set_roots(["workspace"])
+    folder = await client.set_folder("workspace/" + "deep/" * 30)
     entry = client_log()[-1]
-    assert (entry["tool"], entry["outcome"], entry["args"]) == ("(roots)", "ROOTS DECLARED",
-                                                               {"roots": uris})
+    assert (entry["tool"], entry["outcome"], entry["detail"]) == ("(folder)", "FOLDER CONFIGURED",
+                                                                 str(folder))
+    assert len(str(folder)) > 100
 
 
 def test_unreadable_log_lines_are_shown_not_hidden(tmp_path):
@@ -72,3 +76,16 @@ def test_unreadable_log_lines_are_shown_not_hidden(tmp_path):
                     '"outcome": "ok", "detail": ""}\nnot json\n')
     rows = audit_rows(path, with_request_id=False)
     assert rows[0][-1] == "unreadable line 2" and rows[1][1] == "t"
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_each_round_is_audited():
+    (WORKSPACE / "a.txt").write_text("x")
+    await call_server("delete_file", {"filepath": "a.txt"}, elicitation=elicitation_answer(
+        "accept", {"confirm_name": "a.txt", "reason": "old draft"}))
+    entries = server_log()
+    assert [(e["tool"], e["outcome"]) for e in entries] == [("delete_file", "input_required"),
+                                                           ("delete_file", "success")]
+    assert entries[0]["detail"].startswith("asked: Confirm deletion of a.txt")
+    assert "reason: old draft" in entries[1]["detail"]

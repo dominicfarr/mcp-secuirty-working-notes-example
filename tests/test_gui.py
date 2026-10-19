@@ -60,27 +60,29 @@ async def test_invalid_arguments_are_rejected_before_sending():
         assert "Invalid arguments" in timeline
 
 
-def test_args_template_points_inside_the_root():
+@pytest.mark.anyio
+async def test_args_template_points_inside_the_folder():
     app = app_module.MCPPermissionClientApp("unused.py")
     app.tool_schemas = {"write_file": {"properties": {"filepath": {"type": "string"},
                                                       "content": {"type": "string"}}}}
-    app.set_roots(["workspace/ROOT"])
-    assert json.loads(app.gui_select_tool("", select_row("write_file"))[1])["filepath"] == "ROOT/"
-    for root in ("workspace", "/"):
-        app.set_roots([root])
+    await app.set_folder("workspace/FOLDER")
+    assert json.loads(app.gui_select_tool("", select_row("write_file"))[1])["filepath"] == "FOLDER/"
+    for folder in ("workspace", "/"):
+        await app.set_folder(folder)
         assert json.loads(app.gui_select_tool("", select_row("write_file"))[1])["filepath"] == ""
 
 
-def test_root_control_shows_what_the_client_declares():
+@pytest.mark.anyio
+async def test_folder_control_shows_what_the_server_is_launched_with():
     (WORKSPACE / "projects").mkdir()
     app = app_module.MCPPermissionClientApp("unused.py")
-    box, declared = app.gui_load_roots()
+    box, launched = app.gui_load_folder()
     assert box["choices"] == ["workspace/", "workspace/projects/", WHOLE_DISK]
-    assert declared == f"Declared: `{DEFAULT_ROOT.as_uri()}`"
-    box, declared = app.gui_set_root("workspace/projects/")
-    assert (DEFAULT_ROOT / "projects").as_uri() in declared
+    assert launched == f"Server launched with: `--allowed-folder {DEFAULT_ROOT}`"
+    box, launched = await app.gui_set_folder("workspace/projects/")
+    assert str(DEFAULT_ROOT / "projects") in launched
     with pytest.warns(UserWarning, match="Enter a folder path"):  # the user is told
-        box, declared = app.gui_set_root("   ")  # and an empty value keeps the root
+        box, launched = await app.gui_set_folder("   ")  # and an empty value keeps the folder
     assert box["value"] == "workspace/projects/"
 
 
@@ -93,11 +95,10 @@ def test_timeline_shows_each_step():
     rejected = timeline_for(ToolOutcome(request, "REJECTED", "rejected by user"))
     assert "Rejected by you" in rejected
     full = timeline_for(ToolOutcome(request, "ALLOWED", "user approved", None, True,
-                                    ["file:///w"], [("Confirm?", "decline", None),
+                                    ["v1.abcdefghijklmnop"], [("Confirm?", "decline", None),
                                                     ("Q", INPUT_AUTO_DECLINED, None)]))
-    for line in ("no root", "↩ Server asked the client for its roots", "file:///w",
-                 "⏸ Server asked for input", "✗ You answered: decline",
-                 "✗ Declined automatically"):
+    for line in ("Server returned `input_required` and asked", "✗ You answered: decline",
+                 "✗ Declined automatically", "Re-sent `tools/call`", "`v1.abcdefghi…`"):
         assert line in full, line
 
 

@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 from mcp.types import (CallToolResult, ElicitRequestFormParams, ElicitRequestURLParams,
-                       ElicitResult, TextContent)
+                       ElicitResult, InputRequiredResult, ListRootsRequest, TextContent)
 
 from client import (CANCELLED_CAUSE, INPUT_AUTO_DECLINED, QUESTION_TIMEOUT_SECONDS, CallInProgress,
                     InputInvalid, MCPPermissionClient, ToolRequest, is_supported_schema)
@@ -119,20 +119,60 @@ async def test_unanswered_question_does_not_block_the_client(make_app):
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_late_answer_deletes_nothing(make_app):
+async def test_expired_confirmation_deletes_nothing(make_app):
     app = make_app({"delete_file": "allow"})
     (WORKSPACE / "b.txt").write_text("x")
     paused = await app.request_tool("delete_file", {"filepath": "b.txt"})
-    await asyncio.sleep(ELICITATION_TIMEOUT + 1)  # the server has given up and told the client
-    with pytest.raises(KeyError):  # the question closed when the server stopped waiting
-        await app.answer_input(paused.input_request.input_id, "accept", good("b.txt"))
+    await asyncio.sleep(ELICITATION_TIMEOUT + 1)  # the sealed state has expired; the client waits on
+    late = await app.answer_input(paused.input_request.input_id, "accept", good("b.txt"))
+    assert late.is_error and "Invalid or expired requestState" in outcome_text(late)
     assert (WORKSPACE / "b.txt").exists()
-    assert any(entry["outcome"] == "ERROR"
-               and f"no answer within {ELICITATION_TIMEOUT} seconds" in entry["detail"]
-               for entry in client_log())
-    assert any(entry["outcome"] == "INPUT CANCELLED"
-               and entry["detail"].startswith(f"no answer: {CANCELLED_CAUSE}")
-               for entry in client_log())
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_file_removed_between_rounds_is_reported():
+    (WORKSPACE / "b.txt").write_text("x")
+
+    async def remove_then_accept(_context, _params):
+        (WORKSPACE / "b.txt").unlink()
+        return ElicitResult(action="accept", content=good("b.txt"))
+
+    is_error, text = await call_server("delete_file", {"filepath": "b.txt"},
+                                       elicitation=remove_then_accept)
+    assert is_error and "File b.txt not found" in text
+
+
+@pytest.mark.anyio
+async def test_undeclared_input_request_ends_the_call(make_client):
+    client, _ = make_client({"read_file": "allow"})
+
+    class AsksForRoots:
+        calls = 0
+
+        async def call_tool(self, *_args, **_kwargs):
+            AsksForRoots.calls += 1
+            return InputRequiredResult(input_requests={"r": ListRootsRequest()})
+
+    client.session = AsksForRoots()
+    outcome = await client.request_tool("read_file", {"filepath": "a.txt"})
+    assert outcome.is_error and "roots/list" in outcome_text(outcome) and AsksForRoots.calls == 1
+
+
+@pytest.mark.anyio
+async def test_rounds_are_capped(make_client):
+    client, _ = make_client({"read_file": "allow"})
+
+    class AlwaysAsks:
+        calls = 0
+
+        async def call_tool(self, *_args, **_kwargs):
+            AlwaysAsks.calls += 1
+            return InputRequiredResult(request_state="again")
+
+    client.session = AlwaysAsks()
+    outcome = await client.request_tool("read_file", {"filepath": "a.txt"})
+    assert outcome.is_error and "after 3 rounds" in outcome_text(outcome) and AlwaysAsks.calls == 3
 
 
 @pytest.mark.anyio
@@ -142,7 +182,7 @@ async def test_cancelled_question_is_closed_and_audited(make_client):
     client, _ = make_client()
     params = ElicitRequestFormParams(message="Confirm?", requested_schema={
         "type": "object", "properties": {"ok": {"type": "boolean"}}})
-    call = CallInProgress(ToolRequest("r3", "delete_file", {"filepath": "x"}), "policy: allow", 0)
+    call = CallInProgress(ToolRequest("r3", "delete_file", {"filepath": "x"}), "policy: allow")
     call.task = asyncio.ensure_future(asyncio.get_running_loop().create_future())  # still running
     handler = asyncio.ensure_future(client._on_elicitation(  # pylint: disable=protected-access
         None, params))
@@ -160,7 +200,7 @@ async def test_cancelled_question_is_closed_and_audited(make_client):
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_file_changed_while_deciding_is_not_deleted():
+async def test_file_changed_between_rounds_is_not_deleted():
     (WORKSPACE / "b.txt").write_text("original")
 
     async def change_then_accept(_context, _params):
@@ -199,7 +239,7 @@ async def test_unsupported_form_is_declined_and_audited(make_client):
         None, ElicitRequestFormParams(message="nested form", requested_schema=nested)), 5)
     assert answer.action == "decline"
     # The call it belongs to records and audits the automatic decline
-    call = CallInProgress(ToolRequest("r1", "delete_file", {"filepath": "x"}), "policy: allow", 0)
+    call = CallInProgress(ToolRequest("r1", "delete_file", {"filepath": "x"}), "policy: allow")
     finished = asyncio.get_running_loop().create_future()
     call.task = asyncio.ensure_future(finished)
     asyncio.get_running_loop().call_later(0.1, finished.set_result, CallToolResult(
@@ -219,7 +259,7 @@ async def test_url_elicitation_is_declined_and_audited(make_client):
     answer = await asyncio.wait_for(client._on_elicitation(  # pylint: disable=protected-access
         None, params), 5)
     assert answer.action == "decline"
-    call = CallInProgress(ToolRequest("r2", "delete_file", {"filepath": "x"}), "policy: allow", 0)
+    call = CallInProgress(ToolRequest("r2", "delete_file", {"filepath": "x"}), "policy: allow")
     finished = asyncio.get_running_loop().create_future()
     call.task = asyncio.ensure_future(finished)
     asyncio.get_running_loop().call_later(0.1, finished.set_result, CallToolResult(

@@ -4,7 +4,7 @@ import os
 import shutil
 
 import pytest
-from mcp.types import ListRootsResult, Root
+from mcp.types import ElicitResult
 
 from helpers import PROJECT, WORKSPACE, call_server, outcome_text
 
@@ -41,17 +41,20 @@ async def test_errors_never_reveal_server_paths(make_app):
         assert outcome.is_error and str(PROJECT) not in outcome_text(outcome), outcome_text(outcome)
 
 
-async def test_symlink_swapped_during_a_call_is_not_followed():
+async def test_symlink_swapped_between_rounds_is_not_followed():
     outside = PROJECT / "outside"
     outside.mkdir(exist_ok=True)
+    (outside / "x.txt").write_text("keep me")
     (WORKSPACE / "projects").mkdir()
+    (WORKSPACE / "projects" / "x.txt").write_text("x")
 
-    async def swap_then_answer(_context):
+    async def swap_then_accept(_context, _params):
         shutil.rmtree(WORKSPACE / "projects")
         os.symlink(outside, WORKSPACE / "projects")
-        return ListRootsResult(roots=[Root(uri=WORKSPACE.as_uri(), name="workspace")])
+        return ElicitResult(action="accept", content={"confirm_name": "projects/x.txt",
+                                                      "reason": "old draft"})
 
-    is_error, text = await call_server("write_file", {"filepath": "projects/x.txt", "content": "x"},
-                                       roots=swap_then_answer)
+    is_error, text = await call_server("delete_file", {"filepath": "projects/x.txt"},
+                                       elicitation=swap_then_accept)
     assert is_error and "outside the workspace" in text
-    assert not (outside / "x.txt").exists()
+    assert (outside / "x.txt").read_text() == "keep me"

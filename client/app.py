@@ -8,7 +8,7 @@ from mcp.shared.exceptions import MCPError
 from audit_view import audit_rows, CLIENT_COLUMNS, SERVER_COLUMNS
 from tools_view import (first_line, policy_label, args_template, parse_arguments, timeline_for,
                         invalid_arguments_timeline, not_pending_timeline, approval_card,
-                        root_choices, root_display, parse_root, declared_line, root_prefix,
+                        folder_choices, folder_display, parse_folder, launch_line, folder_prefix,
                         FormField, form_fields, form_content, input_header, not_waiting_timeline)
 from client import (MCPPermissionClient, ToolRequest, InputRequest, InputInvalid, PROJECT_DIR,
                     DEFAULT_ROOT)
@@ -89,7 +89,7 @@ class MCPPermissionClientApp(MCPPermissionClient):
     def gui_select_tool(self, pending_id: str, evt: gr.SelectData):
         """Select the clicked tool and fill Arguments with a template from its schema."""
         tool_name = evt.row_value[0]
-        prefix = root_prefix(self.roots[0], DEFAULT_ROOT)
+        prefix = folder_prefix(self.folder, DEFAULT_ROOT)
         return (tool_name, args_template(self.tool_schemas.get(tool_name), prefix),
                 gr.update(interactive=not pending_id))
 
@@ -131,21 +131,22 @@ class MCPPermissionClientApp(MCPPermissionClient):
         except KeyError:
             return flow_outputs(not_waiting_timeline(input_id))
         return flow_outputs(timeline_for(outcome), None, outcome.input_request)
-    def gui_load_roots(self):
-        """Root presets (workspace and its subfolders) and the root currently declared."""
-        return (gr.update(choices=root_choices(DEFAULT_ROOT),
-                          value=root_display(self.roots[0], PROJECT_DIR)),
-                declared_line(self.root_uris()))
+    def gui_load_folder(self):
+        """Folder presets (workspace and its subfolders) and the folder the server is launched
+        with."""
+        return (gr.update(choices=folder_choices(DEFAULT_ROOT),
+                          value=folder_display(self.folder, PROJECT_DIR)),
+                launch_line(self.folder))
 
-    def gui_set_root(self, value: str):
-        """Declare the chosen folder as the client's root; an empty value keeps the current one."""
-        path = parse_root(value or "")
+    async def gui_set_folder(self, value: str):
+        """Relaunch the server with the chosen folder; an empty value keeps the current one."""
+        path = parse_folder(value or "")
         if path is None:
             gr.Warning("Enter a folder path")
         else:
-            self.set_roots([path])
-        return (gr.update(value=root_display(self.roots[0], PROJECT_DIR)),
-                declared_line(self.root_uris()))
+            await self.set_folder(path)
+        return (gr.update(value=folder_display(self.folder, PROJECT_DIR)),
+                launch_line(self.folder))
 
     async def gui_configure_permission(self, tool_name: str, policy: str):
         """Configure permission for a tool."""
@@ -207,10 +208,9 @@ class MCPPermissionClientApp(MCPPermissionClient):
         gr.Markdown("**Where things run:** This app is the MCP client. The server is a separate "
                     "process it started on this machine (stdio), so both see the same disk; "
                     "`workspace/` is the user's files. A tool call carries only the tool name and "
-                    "arguments. The server asks the client for its roots during the call. A remote "
-                    "(HTTP) server would run, and write, on its own machine, where your `file://` "
-                    "roots would mean nothing: file roots are mainly for local servers.")
-        self._build_root_control(interface)
+                    "arguments. The folder the server may use is set when the client launches it "
+                    "(`--allowed-folder`); MCP roots, which used to do this, are deprecated.")
+        self._build_folder_control(interface)
         tool_table = self._build_tool_table(interface)
 
         selected_tool = gr.Textbox(label="Selected tool", interactive=False)
@@ -285,16 +285,16 @@ class MCPPermissionClientApp(MCPPermissionClient):
 
         return question_state, input_group, heading, schema_view, errors
 
-    def _build_root_control(self, interface: gr.Blocks):
-        """Root picker: the folder this client declares to the server as its MCP root."""
-        root_box = gr.Dropdown(
-            label="Client root (sent to the server as an MCP root)",
-            info="Tells the server which folder it may work in. The server enforces it, and "
-                 "can't be given more than its own workspace.",
+    def _build_folder_control(self, interface: gr.Blocks):
+        """Folder picker: the folder the server is launched with (--allowed-folder)."""
+        folder_box = gr.Dropdown(
+            label="Folder the server is launched with (--allowed-folder)",
+            info="The server may only work in this folder, and never outside its own workspace. "
+                 "Changing it restarts the server.",
             choices=[], allow_custom_value=True)
-        declared = gr.Markdown()
-        interface.load(fn=self.gui_load_roots, outputs=[root_box, declared])
-        root_box.input(fn=self.gui_set_root, inputs=root_box, outputs=[root_box, declared])
+        launched = gr.Markdown()
+        interface.load(fn=self.gui_load_folder, outputs=[folder_box, launched])
+        folder_box.input(fn=self.gui_set_folder, inputs=folder_box, outputs=[folder_box, launched])
 
     def _build_permissions_tab(self, interface: gr.Blocks):
         """Build the Permissions tab: view and change this client's policy for each tool."""

@@ -15,20 +15,21 @@ DONE, WAIT, FAIL, TODO = "✓", "⏸", "✗", "·"
 JSON_DEFAULTS = {"string": "", "integer": 0, "number": 0, "boolean": False,
                  "array": [], "object": {}}
 
-# Root preset meaning "/": declaring the whole disk, which still gives the server only its own limit
+# Folder preset meaning "/": launching with the whole disk, which still gives the server only its
+# workspace
 WHOLE_DISK = "/ (whole disk)"
 
 
-def root_choices(workspace: Path) -> list[str]:
-    """Root presets: the workspace, each of its subfolders, and the whole disk."""
+def folder_choices(workspace: Path) -> list[str]:
+    """Folder presets: the workspace, each of its subfolders, and the whole disk."""
     subfolders = (sorted(d.name for d in workspace.iterdir() if d.is_dir())
                   if workspace.is_dir() else [])
     return ([f"{workspace.name}/"] + [f"{workspace.name}/{name}/" for name in subfolders]
             + [WHOLE_DISK])
 
 
-def root_display(path: Path, project_dir: Path) -> str:
-    """How a root is shown in the dropdown: relative to the project folder where possible."""
+def folder_display(path: Path, project_dir: Path) -> str:
+    """How a folder is shown in the dropdown: relative to the project folder where possible."""
     if path == Path("/"):
         return WHOLE_DISK
     if path.is_relative_to(project_dir):
@@ -37,7 +38,7 @@ def root_display(path: Path, project_dir: Path) -> str:
     return f"{path}/"
 
 
-def parse_root(value: str) -> str | None:
+def parse_folder(value: str) -> str | None:
     """The path typed or picked in the dropdown, or None if it's empty."""
     value = value.strip()
     if not value:
@@ -45,9 +46,9 @@ def parse_root(value: str) -> str | None:
     return "/" if value == WHOLE_DISK else value
 
 
-def declared_line(uris: list[str]) -> str:
-    """The line under the dropdown: exactly what the client sends to the server."""
-    return "Declared: " + ", ".join(f"`{uri}`" for uri in uris)
+def launch_line(folder: Path) -> str:
+    """The line under the folder control: exactly what the server is launched with."""
+    return f"Server launched with: `--allowed-folder {folder}`"
 
 
 @dataclass(frozen=True)
@@ -142,18 +143,18 @@ def policy_label(tool_name: str, permissions: dict) -> str:
 def args_template(input_schema: dict | None, path_prefix: str = "") -> str:
     """JSON template with a placeholder for each property in a tool's input schema.
 
-    A `filepath` property starts with path_prefix, so it points inside the client's root."""
+    A `filepath` property starts with path_prefix, so it points inside the allowed folder."""
     properties = (input_schema or {}).get("properties", {})
     template = {name: path_prefix if name == "filepath" else JSON_DEFAULTS.get(spec.get("type"), "")
                 for name, spec in properties.items()}
     return json.dumps(template, indent=2) if template else "{}"
 
 
-def root_prefix(root: Path, workspace: Path) -> str:
-    """The client's root as a path prefix relative to the workspace ("ROOT/"), or "" when the
-    root is the workspace itself or lies outside it."""
-    if root != workspace and root.is_relative_to(workspace):
-        return f"{root.relative_to(workspace).as_posix()}/"
+def folder_prefix(folder: Path, workspace: Path) -> str:
+    """The allowed folder as a path prefix relative to the workspace ("FOLDER/"), or "" when the
+    folder is the workspace itself or lies outside it."""
+    if folder != workspace and folder.is_relative_to(workspace):
+        return f"{folder.relative_to(workspace).as_posix()}/"
     return ""
 
 
@@ -197,6 +198,11 @@ def server_text(text: str) -> str:
     return f"`{text.replace('`', "'")}`"
 
 
+def sealed_state_text(state: str) -> str:
+    """The server's sealed requestState, shortened: the client can't read it, only carry it."""
+    return f"`{state[:12]}…`" if state else "no state"
+
+
 def timeline_for(outcome: ToolOutcome) -> str:
     """Step timeline for a request's current state."""
     request = outcome.request
@@ -220,21 +226,21 @@ def timeline_for(outcome: ToolOutcome) -> str:
     policy = ("Client policy: ASK, user approved"
               if outcome.reason == REASON_USER_APPROVED else "Client policy: ALLOW")
     steps = [built, (DONE, policy),
-             (DONE, "Sent to server (tools/call: name + arguments only, no root)")]
-    if outcome.roots_answered is not None:
-        answered = ", ".join(f"`{uri}`" for uri in outcome.roots_answered) or "(no roots)"
-        steps.append((None, "↩ Server asked the client for its roots (`roots/list`); "
-                            f"client answered: {answered}"))
+             (DONE, "Sent to server (tools/call: name + arguments)")]
     for question, answer, content in outcome.inputs:
-        steps.append((None, "⏸ Server asked for input (`elicitation/create`): "
+        steps.append((None, "↩ Server returned `input_required` and asked: "
                             f"{server_text(question)}"))
         steps.append((None, answer_line(answer, content)))
     if outcome.input_request is not None:
-        steps.append((None, "⏸ Server asked for input (`elicitation/create`): "
+        steps.append((None, "↩ Server returned `input_required` and asked: "
                             f"{server_text(outcome.input_request.message)}"))
-        steps.append((None, "⏸ Waiting for your answer"))
+        steps.append((None, "⏸ Waiting for your answer (nothing on the server is waiting)"))
         steps.append((TODO, "Result"))
         return render_timeline(header, steps)
+    if outcome.rounds:
+        steps.append((DONE, "Re-sent `tools/call` with your answers and the server's sealed "
+                            f"state ({sealed_state_text(outcome.rounds[-1])}, opaque to this "
+                            "client)"))
     steps.append((FAIL, "Error") if outcome.is_error else (DONE, "Result"))
     return render_timeline(header, steps, content_text(outcome.content))
 

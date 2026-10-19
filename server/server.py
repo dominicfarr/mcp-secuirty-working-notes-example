@@ -1,19 +1,21 @@
 """MCP server reference implementations for clients with per-tool permissions."""
 
+import argparse
 import functools
 import inspect
+import json
 import os
+import sys
 from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 import warnings
-from urllib.parse import unquote, urlparse
-import anyio
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
-from fastmcp.server.elicitation import CancelledElicitation, DeclinedElicitation
-from mcp.shared.exceptions import MCPError
-from mcp.types import ClientCapabilities, ElicitationCapability, RootsCapability
+from fastmcp.server.middleware import Middleware
+from mcp.server.request_state import RequestStateSecurity
+from mcp.types import (ClientCapabilities, ElicitationCapability, ElicitRequest,
+                       ElicitRequestFormParams, ElicitResult, InputRequiredResult)
 from pydantic import BaseModel, Field, ValidationError
 from audit import AuditLog
 
@@ -35,17 +37,29 @@ LOG_DIR.mkdir(exist_ok=True)
 # Deliberately not exposed to clients as a resource.
 AUDIT_LOG = AuditLog(LOG_DIR / "server_audit.log", actor="server")
 
-# How long to wait for the client to answer a roots/list request before refusing the call.
-ROOTS_TIMEOUT_SECONDS = 5
-
-# How long to wait for the user to answer a confirmation. The environment variable is for the
-# check scripts only; the demo uses 2 minutes.
-ELICITATION_TIMEOUT_SECONDS = float(os.environ.get("MCP_DEMO_ELICITATION_TIMEOUT", "120"))
+# How long a confirmation stays valid. Nothing on the server waits for the answer (MCP 2026-07-28):
+# the sealed requestState carries it, and the framework refuses it once this has passed. The
+# environment variable is for the tests only; the demo uses 2 minutes.
+CONFIRMATION_TTL_SECONDS = float(os.environ.get("MCP_DEMO_ELICITATION_TIMEOUT", "120"))
 
 # A note a tool adds to its own audit record, e.g. the user's answer to a confirmation.
 AUDIT_NOTE: ContextVar[str] = ContextVar("audit_note", default="")
 
-mcp = FastMCP("Permission-Based MCP Server")
+
+
+class ModernProtocolOnly(Middleware):
+    """Refuse handshake-era clients. Only they send initialize, and this server's confirmations
+    use multi round-trip requests, which exist only on MCP 2026-07-28."""
+
+    async def on_initialize(self, context, call_next):  # pylint: disable=unused-argument
+        raise ToolError("this server speaks MCP 2026-07-28 only")
+
+
+# requestState is sealed (encrypted, integrity-checked, bound to the request, expiring) because it
+# passes through the client: the spec requires servers to treat it as attacker-controlled.
+mcp = FastMCP("Permission-Based MCP Server",
+              request_state_security=RequestStateSecurity.ephemeral(ttl=CONFIRMATION_TTL_SECONDS),
+              middleware=[ModernProtocolOnly()])
 
 
 def audited(func):
@@ -67,7 +81,8 @@ def audited(func):
             result = func(*args, **kwargs)
             if inspect.isawaitable(result):
                 result = await result
-            outcome, detail = "success", ""
+            outcome = "input_required" if isinstance(result, InputRequiredResult) else "success"
+            detail = ""
             return result
         except ToolError as e:
             detail = str(e)
@@ -93,62 +108,40 @@ def resolve_in_workspace(filepath: str) -> Path:
     return file_path
 
 
-def allowed_areas(root_paths: list[Path]) -> list[Path]:
-    """Overlap of each client root with the workspace. Roots only narrow the server's own limit:
-    a root inside the workspace narrows it, a root containing it gives exactly the workspace,
-    and any other root gives nothing."""
+# The folder the client launched this server with (--allowed-folder), or None for the whole
+# workspace. It is server configuration: roots, which did this job as a request, are deprecated as
+# of MCP 2026-07-28 (SEP-2577).
+ALLOWED_FOLDER: Path | None = None
+
+
+def allowed_area() -> Path | None:
+    """Where the file tools may work: the launch folder's overlap with the workspace. A folder
+    inside the workspace narrows it, one containing it gives exactly the workspace, and any other
+    gives nothing (None)."""
     base = WORKSPACE_DIR.resolve()
-    areas = []
-    for root in root_paths:
-        root = root.resolve()
-        if root.is_relative_to(base):
-            areas.append(root)
-        elif base.is_relative_to(root):
-            areas.append(base)
-    return areas
+    if ALLOWED_FOLDER is None:
+        return base
+    folder = ALLOWED_FOLDER.resolve()
+    if folder.is_relative_to(base):
+        return folder
+    return base if base.is_relative_to(folder) else None
 
 
-async def client_roots(ctx: Context) -> list[Path] | None:
-    """The client's file:// roots as paths, or None if the client doesn't support roots."""
-    if not ctx.session.check_client_capability(ClientCapabilities(roots=RootsCapability())):
-        return None
-    try:
-        with anyio.fail_after(ROOTS_TIMEOUT_SECONDS):
-            roots = (await ctx.session.list_roots()).roots
-    except (MCPError, TimeoutError, ValueError) as e:
-        # ValueError includes pydantic's ValidationError: a malformed roots reply
-        raise ToolError("Access denied: could not get the client's roots") from e
-    paths = (file_uri_path(str(root.uri)) for root in roots)
-    return [path for path in paths if path is not None]
-
-
-def file_uri_path(uri: str) -> Path | None:
-    """The local path of a file:// URI, or None if it doesn't name a local file: another scheme,
-    another host (RFC 8089), or a path containing a NUL byte. (Path.from_uri rejects file:///.)"""
-    parsed = urlparse(uri)
-    if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
-        return None
-    path = unquote(parsed.path) or "/"
-    return None if "\x00" in path else Path(path)
-
-
-async def resolve_in_roots(filepath: str, ctx: Context) -> Path:
-    """resolve_in_workspace, then require the path to be inside one of the client's roots.
-
-    A client without roots support gets the workspace limit alone; an empty list (or no file://
-    roots) is a declaration of nothing, so every path is refused."""
-    resolve_in_workspace(filepath)  # report path problems before asking the client
-    roots = await client_roots(ctx)
-    # Resolve again after the await: the filesystem may have changed while the client answered
-    # (it controls how long that takes), and the path that was checked must be the path used.
+def resolve_allowed(filepath: str) -> Path:
+    """resolve_in_workspace, then require the path to be inside the allowed folder."""
     file_path = resolve_in_workspace(filepath)
-    if roots is None:
-        return file_path
-    if not roots:
-        raise ToolError("Access denied: the client declared no roots")
-    if not any(file_path.is_relative_to(area) for area in allowed_areas(roots)):
-        raise ToolError(f"Access denied: {filepath} is outside the client's roots")
+    area = allowed_area()
+    if area is None or not file_path.is_relative_to(area):
+        raise ToolError(f"Access denied: {filepath} is outside the allowed folder")
     return file_path
+
+
+def parse_launch_arguments(argv: list[str]) -> Path | None:
+    """The --allowed-folder the client launched this server with, if any."""
+    parser = argparse.ArgumentParser(description="MCP server for the permission-client demo")
+    parser.add_argument("--allowed-folder", type=Path, default=None,
+                        help="the only folder (within the workspace) the file tools may use")
+    return parser.parse_args(argv).allowed_folder
 
 
 class DeleteConfirmation(BaseModel):
@@ -169,11 +162,6 @@ def human_size(size: int) -> str:
     return f"{size / (1024 * 1024):.1f} MB"
 
 
-def duration_text(seconds: float) -> str:
-    """A timeout for people: '2 minutes', '3 seconds'."""
-    return f"{seconds / 60:g} minutes" if seconds >= 60 else f"{seconds:g} seconds"
-
-
 def file_identity(file_path: Path) -> tuple[int, int, int]:
     """What identifies the file the user was asked about: inode, size and modification time."""
     stat = file_path.stat()
@@ -189,33 +177,45 @@ def backup_path(file_path: Path) -> Path:
     return backup
 
 
-async def confirm_deletion(filepath: str, file_path: Path, ctx: Context) -> DeleteConfirmation:
-    """Ask the user, through the client, to confirm deleting file_path, then check the answer.
+# The key of the one question delete_file asks; the answer comes back under the same key
+CONFIRM_KEY = "confirm"
 
-    Raises ToolError unless the user accepted with a valid confirmation that matches the path.
-    """
+
+def ask_to_confirm(filepath: str, file_path: Path, ctx: Context) -> InputRequiredResult:
+    """Round 1: ask the user, through the client, to confirm deleting file_path.
+
+    What the answer must be checked against (the path and the file's identity) goes into
+    requestState, which the framework seals: the client carries it but can't read or change it."""
     capability = ClientCapabilities(elicitation=ElicitationCapability())
     if not ctx.session.check_client_capability(capability):
         raise ToolError("Deletion needs confirmation, but this client can't be asked")
+    if not file_path.exists():
+        raise ToolError(f"File {filepath} not found")
     stat = file_path.stat()
     modified = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
     message = f"Confirm deletion of {filepath} ({human_size(stat.st_size)}, modified {modified})"
+    AUDIT_NOTE.set(f"asked: {message}")
+    question = ElicitRequest(params=ElicitRequestFormParams(
+        message=message, requested_schema=DeleteConfirmation.model_json_schema()))
+    state = {"path": str(file_path), "identity": list(file_identity(file_path))}
+    return InputRequiredResult(input_requests={CONFIRM_KEY: question},
+                               request_state=json.dumps(state))
+
+
+def confirmed(filepath: str, answer: ElicitResult) -> DeleteConfirmation:
+    """Round 2: check the user's answer. Raises ToolError unless the user accepted with a valid
+    confirmation that matches the path."""
+    if answer.action == "decline":
+        raise ToolError("Deletion declined by the user")
+    if answer.action != "accept":
+        raise ToolError("Deletion cancelled")
     try:
-        with anyio.fail_after(ELICITATION_TIMEOUT_SECONDS):
-            answer = await ctx.elicit(message, response_type=DeleteConfirmation)
-    except TimeoutError as e:
-        waited = duration_text(ELICITATION_TIMEOUT_SECONDS)
-        raise ToolError(f"Deletion cancelled (no answer within {waited})") from e
-    except ValidationError as e:
         # The server checks the answer again: it can't trust the client's validation
+        confirmation = DeleteConfirmation.model_validate(answer.content or {})
+    except ValidationError as e:
         first = e.errors()[0]
         field = ".".join(str(part) for part in first["loc"])
         raise ToolError(f"Confirmation was not valid: {field}: {first['msg']}") from e
-    if isinstance(answer, DeclinedElicitation):
-        raise ToolError("Deletion declined by the user")
-    if isinstance(answer, CancelledElicitation):
-        raise ToolError("Deletion cancelled")
-    confirmation = answer.data
     if confirmation.confirm_name != filepath:  # a rule a schema can't express
         raise ToolError(f"Confirmation did not match: you typed '{confirmation.confirm_name}', "
                         f"expected '{filepath}'")
@@ -224,14 +224,14 @@ async def confirm_deletion(filepath: str, file_path: Path, ctx: Context) -> Dele
 
 @mcp.tool()
 @audited
-async def read_file(filepath: str, ctx: Context) -> str:
+def read_file(filepath: str) -> str:
     """
     Read a text file from the workspace.
 
     Args:
         filepath: Path to the file relative to the workspace
     """
-    file_path = await resolve_in_roots(filepath, ctx)
+    file_path = resolve_allowed(filepath)
     try:
         return file_path.read_text(encoding="utf-8")
     except FileNotFoundError as e:
@@ -244,7 +244,7 @@ async def read_file(filepath: str, ctx: Context) -> str:
 
 @mcp.tool()
 @audited
-async def write_file(filepath: str, content: str, ctx: Context) -> str:
+def write_file(filepath: str, content: str) -> str:
     """
     Write text to a file in the workspace, replacing any existing content.
 
@@ -252,7 +252,7 @@ async def write_file(filepath: str, content: str, ctx: Context) -> str:
         filepath: Path to the file relative to the workspace
         content: Content to write to the file
     """
-    file_path = await resolve_in_roots(filepath, ctx)
+    file_path = resolve_allowed(filepath)
     try:
         file_path.write_text(content, encoding="utf-8")
         return f"Successfully wrote to {filepath}"
@@ -262,23 +262,23 @@ async def write_file(filepath: str, content: str, ctx: Context) -> str:
 
 @mcp.tool()
 @audited
-async def delete_file(filepath: str, ctx: Context) -> str:
+def delete_file(filepath: str, ctx: Context) -> str | InputRequiredResult:
     """
     Delete a file from the workspace, after the user confirms.
 
     Args:
         filepath: Path to the file relative to the workspace
     """
-    file_path = await resolve_in_roots(filepath, ctx)
-    if not file_path.exists():
-        raise ToolError(f"File {filepath} not found")
-    asked_about = file_identity(file_path)
-    confirmation = await confirm_deletion(filepath, file_path, ctx)
+    file_path = resolve_allowed(filepath)  # every round: the retry is a new, untrusted request
+    answer = (ctx.input_responses or {}).get(CONFIRM_KEY)
+    if not isinstance(answer, ElicitResult) or ctx.request_state is None:
+        return ask_to_confirm(filepath, file_path, ctx)  # round 1, or an answer without state
+    asked = json.loads(ctx.request_state)  # sealed: unchanged since round 1, and not expired
+    confirmation = confirmed(filepath, answer)
     backup_note = "yes" if confirmation.keep_backup else "no"
     AUDIT_NOTE.set(f"answer: accept; reason: {confirmation.reason}; backup: {backup_note}")
-    file_path = await resolve_in_roots(filepath, ctx)  # again: the user may have taken minutes
     try:
-        if file_identity(file_path) != asked_about:  # delete only the file the user confirmed
+        if str(file_path) != asked["path"] or list(file_identity(file_path)) != asked["identity"]:
             raise ToolError(f"File {filepath} changed while waiting for confirmation; not deleted")
         if confirmation.keep_backup:
             backup = backup_path(file_path)
@@ -335,4 +335,5 @@ Please analyze:
 
 
 if __name__ == "__main__":
+    ALLOWED_FOLDER = parse_launch_arguments(sys.argv[1:])
     mcp.run(transport="stdio")

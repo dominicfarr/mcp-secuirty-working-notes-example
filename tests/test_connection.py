@@ -3,10 +3,12 @@
 import asyncio
 
 import pytest
+from mcp import Client
 from mcp.shared.exceptions import MCPError
-from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS
 
-from helpers import CRASH_SERVER, SERVER_SCRIPT, WORKSPACE, FakeSession, client_log, outcome_text
+from client import innermost_error
+from helpers import (CRASH_SERVER, SERVER_SCRIPT, WORKSPACE, FakeSession, client_log, outcome_text,
+                     server_params)
 
 
 @pytest.mark.integration
@@ -54,9 +56,22 @@ async def test_interrupted_request_does_not_steal_the_next_question(make_app):
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_client_speaks_the_handshake_protocol(make_app):
-    # Roots and elicitation work as Part 1 describes only on handshake-era protocols; 2026-07-28
-    # replaces them with multi round-trip requests
+async def test_client_speaks_2026_07_28(make_app):
     app = make_app()
     await app.list_tools()
-    assert app.protocol_version in HANDSHAKE_PROTOCOL_VERSIONS, app.protocol_version
+    assert app.protocol_version == "2026-07-28"
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_handshake_client_is_refused():
+    # A handshake-era client (initialize) can't be served: this server's confirmations use multi
+    # round-trip requests, which only exist on 2026-07-28
+    try:
+        async with Client(server_params(), mode="legacy") as client:
+            await client.list_tools()
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        error = innermost_error(e)
+    else:
+        pytest.fail("a handshake-era client was served")
+    assert "2026-07-28 only" in str(error)

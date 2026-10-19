@@ -11,19 +11,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import anyio
 from jsonschema import Draft202012Validator
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import get_default_environment, stdio_client
+from mcp import Client, ClientSession, StdioServerParameters
+from mcp.client.stdio import get_default_environment
 from mcp.shared.exceptions import MCPError
-from mcp.types import (CONNECTION_CLOSED, ElicitRequestFormParams, ElicitRequestParams,
-                       ElicitResult, ListRootsResult, Root, TextContent)
+from mcp.types import (CONNECTION_CLOSED, INVALID_REQUEST, ElicitRequest, ElicitRequestFormParams,
+                       ElicitRequestParams, ElicitResult, InputRequiredResult, TextContent)
 from pydantic import AnyUrl
 from permissions import PERMISSIONS_FILE, load_permissions
 from audit import AuditLog
 
 POLICIES = ("allow", "ask", "deny")
 
-# The project folder, and the folder the client declares as its root by default: the user's
-# files (a real host would use the folder the user opened).
+# The project folder, and the folder the server is launched with by default: the user's files
+# (a real host would use the folder the user opened).
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_ROOT = PROJECT_DIR / "workspace"
 
@@ -39,14 +39,17 @@ INPUT_OUTCOMES = {"accept": "INPUT ACCEPTED", "decline": "INPUT DECLINED",
 INPUT_AUTO_DECLINED = "declined automatically (the client can't present this form)"
 # Field types the client can present as a form (MCP elicitation: flat, primitive fields)
 SUPPORTED_FIELD_TYPES = ("string", "number", "integer", "boolean")
+# The MCP protocol revision this client speaks. Pinned rather than "auto", so it can't fall back
+# to the handshake era, where servers ask mid-call instead of by multi round-trip requests.
+PROTOCOL_VERSION = "2026-07-28"
+# How many input_required rounds one tool call may take before the client gives up
+INPUT_ROUNDS_MAX = 3
 # How long the client waits for the user to answer a server's question: a little longer than the
-# server waits (2 minutes, or MCP_DEMO_ELICITATION_TIMEOUT in the checks). While a question is
-# open the MCP library reads nothing else from the server, so an abandoned form (a closed or
-# reloaded page) must not hold the connection for ever.
+# server's confirmation stays valid (2 minutes, or MCP_DEMO_ELICITATION_TIMEOUT in the tests), so
+# an abandoned form (a closed or reloaded page) never holds the call for ever.
 QUESTION_TIMEOUT_SECONDS = float(os.environ.get("MCP_DEMO_ELICITATION_TIMEOUT", "120")) + 5
-# Why an open question closed when its handler was cancelled. mcp cancels it both when the server
-# stops waiting and when the connection closes, and the client is not told which.
-CANCELLED_CAUSE = "the request was cancelled (the server stopped waiting or the connection closed)"
+# Why an open question closed when its handler was cancelled: the call itself was cancelled.
+CANCELLED_CAUSE = "the request was cancelled (the connection closed or the server was restarted)"
 
 
 def innermost_error(error: BaseException) -> BaseException:
@@ -109,18 +112,19 @@ class ToolOutcome:
     reason: str
     content: list | None = None
     is_error: bool = False
-    roots_answered: list[str] | None = None  # roots the client sent when the server asked
+    rounds: list[str] = field(default_factory=list)  # sealed states the server returned
     inputs: list = field(default_factory=list)  # (question, answer, content) per server question
     input_request: InputRequest | None = None  # set while the call waits for the user
 
 
 @dataclass
 class CallInProgress:
-    """A tool call running in the background, possibly paused on the server's questions."""
+    """A tool call running in the background, possibly paused on the server's questions between
+    input_required rounds."""
     request: ToolRequest
     reason: str
-    asked_before: int
     task: asyncio.Task | None = None
+    rounds: list[str] = field(default_factory=list)
     inputs: list = field(default_factory=list)
 
 
@@ -138,9 +142,7 @@ class MCPPermissionClient:
         self._connect_lock = asyncio.Lock()
         self.permissions = load_permissions(self.permissions_file)
         self.pending: dict[str, ToolRequest] = {}
-        self.roots: list[Path] = [DEFAULT_ROOT]
-        # (how many times the server has asked for roots, what the client last answered)
-        self._last_roots_answer: tuple[int, list[str]] = (0, [])
+        self.folder: Path = DEFAULT_ROOT  # the folder the server is launched with
         self.server_name = ""
         self.protocol_version = ""  # the MCP protocol revision negotiated with the server
         # Questions from the server (elicitation) on their way to the call that's waiting
@@ -172,20 +174,21 @@ class MCPPermissionClient:
         """
         server_params = StdioServerParameters(
             command=sys.executable,
-            args=[self.server_script],
+            args=[self.server_script, "--allowed-folder", str(self.folder)],
             # stdio passes the server only a few safe variables; add the demo's own settings
             env={**get_default_environment(),
                  **{k: v for k, v in os.environ.items() if k.startswith("MCP_DEMO_")}}
         )
         try:
-            async with stdio_client(server_params) as (read, write):
-                async with ClientSession(read, write, list_roots_callback=self._list_roots,
-                                         elicitation_callback=self._on_elicitation) as session:
-                    initialized = await session.initialize()
-                    self.server_name = initialized.server_info.name
-                    self.protocol_version = initialized.protocol_version
-                    ready.set_result(session)
-                    await asyncio.get_running_loop().create_future()  # wait for disconnect()
+            async with Client(server_params, mode=PROTOCOL_VERSION,
+                              elicitation_callback=self._on_elicitation) as connection:
+                # serverInfo is optional on 2026-07-28 (fastmcp doesn't send it); the user must
+                # still be told which server is asking, so fall back to the script launched
+                info = connection.server_info
+                self.server_name = info.name if info else Path(self.server_script).stem
+                self.protocol_version = connection.protocol_version
+                ready.set_result(connection.session)
+                await asyncio.get_running_loop().create_future()  # wait for disconnect()
         except Exception as e:  # pylint: disable=broad-exception-caught
             # Not ours to handle: pass it to connect(), waiting in another task. The stdio
             # transport wraps errors in exception groups, so unwrap to the real one.
@@ -195,7 +198,16 @@ class MCPPermissionClient:
             self.session = None
 
     async def disconnect(self):
-        """Close the server connection, if any. The next call reconnects."""
+        """Close the server connection, if any. The next call reconnects.
+
+        A call paused on the server's question belongs to this connection: under MRTR its next
+        round would go to a server that never asked (after a folder change, a new process). So it
+        is cancelled, which closes the question and audits it, before the connection goes."""
+        paused = [call.task for _, call in self._open_questions.values()
+                  if call.task is not None and not call.task.done()]
+        for task in paused:
+            task.cancel()
+        await asyncio.gather(*paused, return_exceptions=True)
         holder, self._holder = self._holder, None
         self.session = None
         if holder is not None and not holder.done():
@@ -211,10 +223,11 @@ class MCPPermissionClient:
         try:
             yield session
         except (anyio.ClosedResourceError, anyio.BrokenResourceError) as e:
-            await self.disconnect()
+            if session is self.session:  # never drop a newer connection than the one that failed
+                await self.disconnect()
             raise ConnectionError("connection to the MCP server was lost") from e
         except MCPError as e:
-            if e.error.code == CONNECTION_CLOSED:
+            if e.error.code == CONNECTION_CLOSED and session is self.session:
                 await self.disconnect()
             raise
 
@@ -241,33 +254,24 @@ class MCPPermissionClient:
         self.audit_log.record(request.tool_name, request.arguments, decision, reason,
                               request_id=request.request_id)
 
-    def set_roots(self, paths: list[str | Path]) -> list[str]:
-        """Declare the folders the server may work in, and audit the change.
+    async def set_folder(self, path: str | Path) -> Path:
+        """Set the folder the server is launched with (--allowed-folder) and audit it.
 
-        Relative paths resolve against the project folder and ~ expands. The server asks for
-        roots on every file tool call, so this applies to the next call. Returns the URIs."""
-        self.roots = [self._resolve_root(path) for path in paths]
-        uris = self.root_uris()
-        self.audit_log.record("(roots)", {"roots": uris}, "ROOTS DECLARED")
-        return uris
-
-    def root_uris(self) -> list[str]:
-        """The current roots as the file:// URIs sent to the server."""
-        return [path.as_uri() for path in self.roots]
+        Relative paths resolve against the project folder and ~ expands. The server reads it at
+        launch, so the running server is stopped and the next call starts one with the new
+        folder. Returns the resolved folder."""
+        self.folder = self._resolve_folder(path)
+        # In the detail, not the arguments: arguments over 100 characters are summarised, and
+        # this is the record of what the server was allowed to touch
+        self.audit_log.record("(folder)", {}, "FOLDER CONFIGURED", str(self.folder))
+        await self.disconnect()
+        return self.folder
 
     @staticmethod
-    def _resolve_root(path: str | Path) -> Path:
-        """A typed root as an absolute, resolved path."""
+    def _resolve_folder(path: str | Path) -> Path:
+        """A typed folder as an absolute, resolved path."""
         path = Path(path).expanduser()
         return (path if path.is_absolute() else PROJECT_DIR / path).resolve()
-
-    async def _list_roots(self, _context) -> ListRootsResult:
-        """Answer the server's roots/list request with the current roots, and remember the answer
-        so the tool call in progress can show that the server asked."""
-        self._last_roots_answer = (self._last_roots_answer[0] + 1, self.root_uris())
-        return ListRootsResult(roots=[Root(uri=path.as_uri(), name=path.name or str(path))
-                                      for path in self.roots])
-
 
     async def _on_elicitation(self, _context, params: ElicitRequestParams) -> ElicitResult:
         """The server asks the user something mid-call: hand it to the waiting call, then wait
@@ -289,8 +293,8 @@ class MCPPermissionClient:
             self._expire(question, f"no answer within {QUESTION_TIMEOUT_SECONDS:g} seconds")
             return ElicitResult(action="cancel")
         except asyncio.CancelledError:
-            # mcp 2 cancels this handler when the server stops waiting and when the connection
-            # closes; close the question either way
+            # The call was cancelled (the connection closed, or the server restarted for a new
+            # folder): close the question so it can't be answered into nothing
             self._expire(question, f"no answer: {CANCELLED_CAUSE}")
             raise
 
@@ -355,25 +359,42 @@ class MCPPermissionClient:
         self.log_audit(request, "REJECTED", REASON_REJECTED)
         return ToolOutcome(request, "REJECTED", REASON_REJECTED)
 
-    def _roots_answered_since(self, asked_before: int) -> list[str] | None:
-        """What the client answered if the server asked for roots after asked_before, else None.
-
-        One request at a time (as in the GUI) keeps this unambiguous."""
-        asked, uris = self._last_roots_answer
-        return uris if asked > asked_before else None
-
     async def _send(self, request: ToolRequest, reason: str) -> ToolOutcome:
         """Send an allowed request. It runs in the background so the server can ask the user
         questions; returns when it finishes or when a question needs an answer."""
         self.log_audit(request, "ALLOWED", reason)
-        call = CallInProgress(request, reason, self._last_roots_answer[0])
-        call.task = asyncio.create_task(self._call_server(request))
+        call = CallInProgress(request, reason)
+        call.task = asyncio.create_task(self._call_server(request, call))
         return await self._follow(call)
 
-    async def _call_server(self, request: ToolRequest):
-        """The tools/call itself; returns the server's result."""
+    async def _call_server(self, request: ToolRequest, call: CallInProgress):
+        """The tools/call, through any input_required rounds (MCP 2026-07-28 multi round-trip
+        requests). Every round re-sends the stored, approved request: only the user's answers and
+        the server's sealed state are added. Returns the server's final result."""
+        answers, state = None, None
         async with self._server_call() as session:
-            return await session.call_tool(request.tool_name, arguments=request.arguments)
+            for _ in range(INPUT_ROUNDS_MAX):
+                result = await session.call_tool(request.tool_name, arguments=request.arguments,
+                                                 input_responses=answers, request_state=state,
+                                                 allow_input_required=True)
+                if not isinstance(result, InputRequiredResult):
+                    return result
+                call.rounds.append(result.request_state or "")
+                answers = await self._answer_input_requests(result.input_requests or {})
+                state = result.request_state  # echoed exactly; None stays None
+        raise MCPError(INVALID_REQUEST,
+                       f"the server still needed input after {INPUT_ROUNDS_MAX} rounds")
+
+    async def _answer_input_requests(self, input_requests: dict) -> dict:
+        """Answer the server's questions for the next round. Only elicitation is declared; any
+        other request (roots, sampling) ends the call instead of being answered."""
+        answers = {}
+        for key, input_request in input_requests.items():
+            if not isinstance(input_request, ElicitRequest):
+                raise MCPError(INVALID_REQUEST, f"the server asked for {input_request.method}, "
+                                                "which this client doesn't support")
+            answers[key] = await self._on_elicitation(None, input_request.params)
+        return answers
 
     async def _follow(self, call: CallInProgress) -> ToolOutcome:
         """Wait until the call finishes or the server asks the user something."""
@@ -400,21 +421,20 @@ class MCPPermissionClient:
                                       request_id=call.request.request_id)
                 continue
             self._open_questions[question.input_id] = (question, call)
-            return ToolOutcome(call.request, "ALLOWED", call.reason,
-                               roots_answered=self._roots_answered_since(call.asked_before),
+            return ToolOutcome(call.request, "ALLOWED", call.reason, rounds=list(call.rounds),
                                inputs=list(call.inputs), input_request=question)
 
     def _finish(self, call: CallInProgress) -> ToolOutcome:
         """The call has ended: log and return what the server reported."""
         request = call.request
-        roots = self._roots_answered_since(call.asked_before)
         try:
             result = call.task.result()
         except (MCPError, OSError) as e:
             detail = f"MCP error: {e}"
             self.log_audit(request, "ERROR", detail)
             error = [TextContent(type="text", text=detail)]
-            return ToolOutcome(request, "ALLOWED", call.reason, error, True, roots, call.inputs)
+            return ToolOutcome(request, "ALLOWED", call.reason, error, True, call.rounds,
+                               call.inputs)
         except BaseException:
             self.log_audit(request, "ERROR", "call failed before the server responded")
             raise
@@ -425,7 +445,7 @@ class MCPPermissionClient:
         else:
             self.log_audit(request, "COMPLETED", "")
         return ToolOutcome(request, "ALLOWED", call.reason, result.content, result.is_error,
-                           roots, call.inputs)
+                           call.rounds, call.inputs)
 
     async def answer_input(self, input_id: str, action: str,
                            content: dict | None = None) -> ToolOutcome:
@@ -441,8 +461,9 @@ class MCPPermissionClient:
             errors = schema_errors(question.schema, content or {})
             if errors:
                 raise InputInvalid(errors)
-        # When the server gives up (timeout) it cancels the question, and _on_elicitation closes it
-        # here, so a late answer raises KeyError below; the call's result gives the server's reason.
+        # A question closes when the client stops waiting (QUESTION_TIMEOUT_SECONDS) or its call is
+        # cancelled; then a late answer raises KeyError below. The server never waits: an answer
+        # sent after its sealed state expires is refused by the server.
         del self._open_questions[input_id]
         if question.answer.done():  # closed meanwhile (the client stopped waiting)
             raise KeyError(input_id)

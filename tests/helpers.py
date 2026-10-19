@@ -7,6 +7,7 @@ it runs as a child process, as it does in the app.
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -15,9 +16,10 @@ import tempfile
 from pathlib import Path
 
 import gradio as gr
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-from mcp.types import CallToolResult, ElicitResult, ListRootsResult, Root, TextContent
+from mcp import Client, StdioServerParameters
+from mcp.shared.exceptions import MCPError
+from mcp.types import (CallToolResult, ElicitRequest, ElicitRequestFormParams, ElicitResult,
+                       InputRequiredResult, TextContent)
 
 REPO = Path(__file__).resolve().parent.parent
 # The code under test; a sabotage run points this at a deliberately broken copy
@@ -33,6 +35,7 @@ for _side in ("client", "server"):
                                                   "permissions.json"))
 (PROJECT / "workspace").mkdir()
 sys.path.insert(0, str(PROJECT / "client"))
+from client import innermost_error  # noqa: E402  pylint: disable=wrong-import-position
 
 WORKSPACE = PROJECT / "workspace"
 SERVER_SCRIPT = str(PROJECT / "server" / "server.py")
@@ -48,7 +51,7 @@ class FakeSession:
     def __init__(self, text="ok", is_error=False, raises=None):
         self.calls, self.text, self.is_error, self.raises = [], text, is_error, raises
 
-    async def call_tool(self, name, arguments):
+    async def call_tool(self, name, arguments, **_rounds):
         self.calls.append((name, dict(arguments)))
         if self.raises:
             raise self.raises
@@ -75,33 +78,54 @@ def server_log() -> list[dict]:
     return _read_log(SERVER_LOG)
 
 
-async def call_server(tool, arguments, roots=None, elicitation=None) -> tuple[bool, str]:
-    """Call the real server directly, as a different MCP client would (scripted callbacks; None
-    means the capability isn't declared). Returns (is_error, text)."""
-    params = StdioServerParameters(command=sys.executable, args=[SERVER_SCRIPT],
-                                   env=dict(os.environ))
-    async with stdio_client(params) as (read, write):
-        async with ClientSession(read, write, list_roots_callback=roots,
-                                 elicitation_callback=elicitation) as session:
-            await session.initialize()
-            result = await session.call_tool(tool, arguments)
+def server_params(folder=None) -> StdioServerParameters:
+    """How the tests launch the real server: optionally with --allowed-folder."""
+    args = [SERVER_SCRIPT] + (["--allowed-folder", str(folder)] if folder is not None else [])
+    return StdioServerParameters(command=sys.executable, args=args, env=dict(os.environ))
+
+
+async def call_server(tool, arguments, folder=None, elicitation=None) -> tuple[bool, str]:
+    """Call the real server directly, as a different 2026-07-28 client would: mcp's Client drives
+    any input_required rounds through the scripted elicitation callback (None means the
+    capability isn't declared). Returns (is_error, text); a protocol error counts as an error."""
+    try:
+        async with Client(server_params(folder), mode="2026-07-28",
+                          elicitation_callback=elicitation) as client:
+            result = await client.call_tool(tool, arguments)
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        error = innermost_error(e)
+        if not isinstance(error, MCPError):
+            raise
+        return True, str(error)
     return result.is_error, result.content[0].text
 
 
-def roots_answer(paths, delay=0):
-    """A roots/list callback answering with these folders (after an optional delay)."""
-    async def answer(_context):
-        await asyncio.sleep(delay)
-        return ListRootsResult(roots=[Root(uri=Path(p).as_uri(), name="root") for p in paths])
-    return answer
+@contextlib.asynccontextmanager
+async def raw_session(folder=None):
+    """A 2026-07-28 session to the real server whose rounds the test drives by hand, as an
+    attacker's client would (elicitation declared; the callback is never used)."""
+    async with Client(server_params(folder), mode="2026-07-28",
+                      elicitation_callback=elicitation_answer("decline")) as client:
+        yield client.session
 
 
-def raw_roots(*uris):
-    """A roots/list callback that sends these URIs unvalidated, as a non-Python client could."""
-    async def answer(_context):
-        return ListRootsResult.model_construct(
-            roots=[Root.model_construct(uri=uri, name="root") for uri in uris])
-    return answer
+class RoundsSession:
+    """A scripted 2026-07-28 session: the first call returns input_required with one question,
+    the retry returns a result. Records (name, arguments, request_state) per call."""
+
+    def __init__(self, with_state=True):
+        self.calls, self.with_state = [], with_state
+
+    async def call_tool(self, name, arguments, input_responses=None, request_state=None,
+                        allow_input_required=False):  # pylint: disable=unused-argument
+        self.calls.append((name, dict(arguments), request_state))
+        if input_responses is None:
+            question = ElicitRequest(params=ElicitRequestFormParams(
+                message="OK?", requested_schema={"type": "object",
+                                                 "properties": {"ok": {"type": "boolean"}}}))
+            return InputRequiredResult(input_requests={"q": question},
+                                       request_state="sealed" if self.with_state else None)
+        return CallToolResult(content=[TextContent(type="text", text="done")], is_error=False)
 
 
 def elicitation_answer(action, content=None, delay=0, seen=None):
