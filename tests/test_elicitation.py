@@ -3,10 +3,11 @@
 import asyncio
 
 import pytest
-from mcp.types import CallToolResult, ElicitRequestParams, ElicitResult, TextContent
+from mcp.types import (CallToolResult, ElicitRequestFormParams, ElicitRequestURLParams,
+                       ElicitResult, TextContent)
 
-from client import (INPUT_AUTO_DECLINED, QUESTION_TIMEOUT_SECONDS, CallInProgress, InputInvalid,
-                    MCPPermissionClient, ToolRequest, is_supported_schema)
+from client import (CANCELLED_CAUSE, INPUT_AUTO_DECLINED, QUESTION_TIMEOUT_SECONDS, CallInProgress,
+                    InputInvalid, MCPPermissionClient, ToolRequest, is_supported_schema)
 from helpers import (ELICITATION_TIMEOUT, WORKSPACE, call_server, client_log,
                      elicitation_answer, outcome_text)
 
@@ -122,10 +123,39 @@ async def test_late_answer_deletes_nothing(make_app):
     app = make_app({"delete_file": "allow"})
     (WORKSPACE / "b.txt").write_text("x")
     paused = await app.request_tool("delete_file", {"filepath": "b.txt"})
-    await asyncio.sleep(ELICITATION_TIMEOUT + 1)  # the server has given up; the client hasn't
-    late = await app.answer_input(paused.input_request.input_id, "accept", good("b.txt"))
-    assert late.is_error and f"no answer within {ELICITATION_TIMEOUT} seconds" in outcome_text(late)
+    await asyncio.sleep(ELICITATION_TIMEOUT + 1)  # the server has given up and told the client
+    with pytest.raises(KeyError):  # the question closed when the server stopped waiting
+        await app.answer_input(paused.input_request.input_id, "accept", good("b.txt"))
     assert (WORKSPACE / "b.txt").exists()
+    assert any(entry["outcome"] == "ERROR"
+               and f"no answer within {ELICITATION_TIMEOUT} seconds" in entry["detail"]
+               for entry in client_log())
+    assert any(entry["outcome"] == "INPUT CANCELLED"
+               and entry["detail"].startswith(f"no answer: {CANCELLED_CAUSE}")
+               for entry in client_log())
+
+
+@pytest.mark.anyio
+async def test_cancelled_question_is_closed_and_audited(make_client):
+    # mcp cancels the handler both when the server gives up and when the connection drops, and
+    # the client can't tell which: the audit must not claim one
+    client, _ = make_client()
+    params = ElicitRequestFormParams(message="Confirm?", requested_schema={
+        "type": "object", "properties": {"ok": {"type": "boolean"}}})
+    call = CallInProgress(ToolRequest("r3", "delete_file", {"filepath": "x"}), "policy: allow", 0)
+    call.task = asyncio.ensure_future(asyncio.get_running_loop().create_future())  # still running
+    handler = asyncio.ensure_future(client._on_elicitation(  # pylint: disable=protected-access
+        None, params))
+    paused = await client._follow(call)  # pylint: disable=protected-access
+    handler.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await handler
+    with pytest.raises(KeyError):
+        await client.answer_input(paused.input_request.input_id, "decline")
+    assert any(entry["outcome"] == "INPUT CANCELLED" and entry.get("request_id") == "r3"
+               and entry["detail"].startswith(f"no answer: {CANCELLED_CAUSE}")
+               for entry in client_log())
+    call.task.cancel()
 
 
 @pytest.mark.integration
@@ -166,18 +196,39 @@ async def test_unsupported_form_is_declined_and_audited(make_client):
     assert is_supported_schema({"type": "object", "properties": {"reason": {"type": "string"}}})
     # The client's real elicitation handler declines at once, without waiting for the user
     answer = await asyncio.wait_for(client._on_elicitation(  # pylint: disable=protected-access
-        None, ElicitRequestParams(message="nested form", requestedSchema=nested)), 5)
+        None, ElicitRequestFormParams(message="nested form", requested_schema=nested)), 5)
     assert answer.action == "decline"
     # The call it belongs to records and audits the automatic decline
     call = CallInProgress(ToolRequest("r1", "delete_file", {"filepath": "x"}), "policy: allow", 0)
     finished = asyncio.get_running_loop().create_future()
     call.task = asyncio.ensure_future(finished)
     asyncio.get_running_loop().call_later(0.1, finished.set_result, CallToolResult(
-        content=[TextContent(type="text", text="done")], isError=False))
+        content=[TextContent(type="text", text="done")], is_error=False))
     outcome = await client._follow(call)  # pylint: disable=protected-access
     assert outcome.inputs == [("nested form", INPUT_AUTO_DECLINED, None)]
     assert any(entry["outcome"] == "INPUT DECLINED" and entry.get("request_id") == "r1"
                for entry in client_log())
+
+
+@pytest.mark.anyio
+async def test_url_elicitation_is_declined_and_audited(make_client):
+    client, _ = make_client()
+    params = ElicitRequestURLParams(message="Sign in to continue",
+                                    url="https://example.com/login", elicitation_id="e1")
+    # Declined at once: this client only presents forms and never opens a server's URL
+    answer = await asyncio.wait_for(client._on_elicitation(  # pylint: disable=protected-access
+        None, params), 5)
+    assert answer.action == "decline"
+    call = CallInProgress(ToolRequest("r2", "delete_file", {"filepath": "x"}), "policy: allow", 0)
+    finished = asyncio.get_running_loop().create_future()
+    call.task = asyncio.ensure_future(finished)
+    asyncio.get_running_loop().call_later(0.1, finished.set_result, CallToolResult(
+        content=[TextContent(type="text", text="done")], is_error=False))
+    outcome = await client._follow(call)  # pylint: disable=protected-access
+    [(message, answer_text, _)] = outcome.inputs
+    assert answer_text == INPUT_AUTO_DECLINED and "https://example.com/login" in message
+    assert any(entry["outcome"] == "INPUT DECLINED" and entry.get("request_id") == "r2"
+               and "https://example.com/login" in entry["detail"] for entry in client_log())
 
 
 def test_no_auto_approving_shortcut():

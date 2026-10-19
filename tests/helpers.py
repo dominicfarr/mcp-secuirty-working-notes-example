@@ -53,7 +53,7 @@ class FakeSession:
         if self.raises:
             raise self.raises
         return CallToolResult(content=[TextContent(type="text", text=self.text)],
-                              isError=self.is_error)
+                              is_error=self.is_error)
 
 
 def outcome_text(outcome) -> str:
@@ -85,7 +85,7 @@ async def call_server(tool, arguments, roots=None, elicitation=None) -> tuple[bo
                                  elicitation_callback=elicitation) as session:
             await session.initialize()
             result = await session.call_tool(tool, arguments)
-    return result.isError, result.content[0].text
+    return result.is_error, result.content[0].text
 
 
 def roots_answer(paths, delay=0):
@@ -108,7 +108,7 @@ def elicitation_answer(action, content=None, delay=0, seen=None):
     """An elicitation callback that answers action/content, recording each question in seen."""
     async def answer(_context, params):
         if seen is not None:
-            seen.append((params.message, params.requestedSchema))
+            seen.append((params.message, params.requested_schema))
         await asyncio.sleep(delay)
         return ElicitResult(action=action, content=content)
     return answer

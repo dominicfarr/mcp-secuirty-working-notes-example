@@ -4,7 +4,7 @@ import sys
 import json
 from pathlib import Path
 import gradio as gr
-from mcp.shared.exceptions import McpError
+from mcp.shared.exceptions import MCPError
 from audit_view import audit_rows, CLIENT_COLUMNS, SERVER_COLUMNS
 from tools_view import (first_line, policy_label, args_template, parse_arguments, timeline_for,
                         invalid_arguments_timeline, not_pending_timeline, approval_card,
@@ -31,6 +31,8 @@ APP_CSS = f"""
                color: white !important; }}
 .approve-btn:hover {{ background: {APPROVE_GREEN_HOVER} !important; }}
 """
+# gradio 6 takes the theme and CSS in launch(); passing them to gr.Blocks is deprecated
+LAUNCH_SETTINGS = {"server_name": "127.0.0.1", "server_port": 7863, "theme": THEME, "css": APP_CSS}
 
 
 def flow_outputs(timeline: str, pending: ToolRequest | None = None,
@@ -76,10 +78,10 @@ class MCPPermissionClientApp(MCPPermissionClient):
         """Connect and list tools for the table; show a status line instead if that fails."""
         try:
             tools = await self.list_tools()
-        except (McpError, OSError) as e:
+        except (MCPError, OSError) as e:
             return [], gr.update(value=f"⚠ Could not load tools: {e}", visible=True)
 
-        self.tool_schemas = {tool.name: tool.inputSchema for tool in tools}
+        self.tool_schemas = {tool.name: tool.input_schema for tool in tools}
         rows = [[tool.name, first_line(tool.description), policy_label(tool.name, self.permissions)]
                 for tool in tools]
         return rows, gr.update(value="", visible=False)
@@ -167,7 +169,7 @@ class MCPPermissionClientApp(MCPPermissionClient):
         """Tool names for the Permissions tab dropdown; empty, with a warning, if loading fails."""
         try:
             tools = await self.list_tools()
-        except (McpError, OSError) as e:
+        except (MCPError, OSError) as e:
             gr.Warning(f"Could not load tools: {e}")
             return gr.update(choices=[])
         return gr.update(choices=[tool.name for tool in tools])
@@ -180,7 +182,7 @@ class MCPPermissionClientApp(MCPPermissionClient):
     def create_interface(self):
         """Create the Gradio interface with permission management."""
 
-        with gr.Blocks(title="MCP Permission Client", theme=THEME, css=APP_CSS) as interface:
+        with gr.Blocks(title="MCP Permission Client") as interface:
             gr.Markdown("""
             # MCP Permission Client
             Manage permissions, view audit logs, and interact with MCP tools securely.
@@ -346,7 +348,7 @@ def main():
 
     client = MCPPermissionClientApp(server_script)
     interface = client.create_interface()
-    interface.queue().launch(server_name="127.0.0.1", server_port=7863)
+    interface.queue().launch(**LAUNCH_SETTINGS)
 
 
 if __name__ == "__main__":

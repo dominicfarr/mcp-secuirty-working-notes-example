@@ -13,9 +13,9 @@ import anyio
 from jsonschema import Draft202012Validator
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import get_default_environment, stdio_client
-from mcp.shared.exceptions import McpError
-from mcp.types import (CONNECTION_CLOSED, ElicitRequestParams, ElicitResult, ListRootsResult,
-                       Root, TextContent)
+from mcp.shared.exceptions import MCPError
+from mcp.types import (CONNECTION_CLOSED, ElicitRequestFormParams, ElicitRequestParams,
+                       ElicitResult, ListRootsResult, Root, TextContent)
 from pydantic import AnyUrl
 from permissions import PERMISSIONS_FILE, load_permissions
 from audit import AuditLog
@@ -44,6 +44,9 @@ SUPPORTED_FIELD_TYPES = ("string", "number", "integer", "boolean")
 # open the MCP library reads nothing else from the server, so an abandoned form (a closed or
 # reloaded page) must not hold the connection for ever.
 QUESTION_TIMEOUT_SECONDS = float(os.environ.get("MCP_DEMO_ELICITATION_TIMEOUT", "120")) + 5
+# Why an open question closed when its handler was cancelled. mcp cancels it both when the server
+# stops waiting and when the connection closes, and the client is not told which.
+CANCELLED_CAUSE = "the request was cancelled (the server stopped waiting or the connection closed)"
 
 
 def innermost_error(error: BaseException) -> BaseException:
@@ -139,6 +142,7 @@ class MCPPermissionClient:
         # (how many times the server has asked for roots, what the client last answered)
         self._last_roots_answer: tuple[int, list[str]] = (0, [])
         self.server_name = ""
+        self.protocol_version = ""  # the MCP protocol revision negotiated with the server
         # Questions from the server (elicitation) on their way to the call that's waiting
         self._questions: asyncio.Queue[InputRequest] = asyncio.Queue()
         self._open_questions: dict[str, tuple[InputRequest, CallInProgress]] = {}
@@ -178,7 +182,8 @@ class MCPPermissionClient:
                 async with ClientSession(read, write, list_roots_callback=self._list_roots,
                                          elicitation_callback=self._on_elicitation) as session:
                     initialized = await session.initialize()
-                    self.server_name = initialized.serverInfo.name
+                    self.server_name = initialized.server_info.name
+                    self.protocol_version = initialized.protocol_version
                     ready.set_result(session)
                     await asyncio.get_running_loop().create_future()  # wait for disconnect()
         except Exception as e:  # pylint: disable=broad-exception-caught
@@ -208,7 +213,7 @@ class MCPPermissionClient:
         except (anyio.ClosedResourceError, anyio.BrokenResourceError) as e:
             await self.disconnect()
             raise ConnectionError("connection to the MCP server was lost") from e
-        except McpError as e:
+        except MCPError as e:
             if e.error.code == CONNECTION_CLOSED:
                 await self.disconnect()
             raise
@@ -266,9 +271,14 @@ class MCPPermissionClient:
 
     async def _on_elicitation(self, _context, params: ElicitRequestParams) -> ElicitResult:
         """The server asks the user something mid-call: hand it to the waiting call, then wait
-        for the user's answer. A form the client can't present is declined automatically."""
-        question = InputRequest(uuid.uuid4().hex[:8], self.server_name, params.message,
-                                params.requestedSchema, asyncio.get_running_loop().create_future())
+        for the user's answer. Only forms are presented; a form the client can't present, or
+        any other mode (such as a URL to open), is declined automatically."""
+        if isinstance(params, ElicitRequestFormParams):
+            message, schema = params.message, params.requested_schema
+        else:  # URL mode: never shown as a link or opened; recorded so the audit shows it
+            message, schema = f"{params.message} [{params.mode} mode: {params.url}]", {}
+        question = InputRequest(uuid.uuid4().hex[:8], self.server_name, message, schema,
+                                asyncio.get_running_loop().create_future())
         if not is_supported_schema(question.schema):
             question.answer.set_result(ElicitResult(action="decline"))
         self._questions.put_nowait(question)
@@ -276,10 +286,15 @@ class MCPPermissionClient:
             return await asyncio.wait_for(asyncio.shield(question.answer),
                                           QUESTION_TIMEOUT_SECONDS)
         except TimeoutError:
-            self._expire(question)
+            self._expire(question, f"no answer within {QUESTION_TIMEOUT_SECONDS:g} seconds")
             return ElicitResult(action="cancel")
+        except asyncio.CancelledError:
+            # mcp 2 cancels this handler when the server stops waiting and when the connection
+            # closes; close the question either way
+            self._expire(question, f"no answer: {CANCELLED_CAUSE}")
+            raise
 
-    def _expire(self, question: InputRequest):
+    def _expire(self, question: InputRequest, reason: str):
         """Nobody answered in time: close the question so the session can carry on, record it,
         and log the call's outcome when it ends (no handler is waiting for it any more)."""
         if not question.answer.done():
@@ -289,8 +304,7 @@ class MCPPermissionClient:
             return
         call.inputs.append((question.message, "cancel", None))
         self.audit_log.record(call.request.tool_name, {}, "INPUT CANCELLED",
-                              f"no answer within {QUESTION_TIMEOUT_SECONDS:g} seconds: "
-                              f"{question.message}", request_id=call.request.request_id)
+                              f"{reason}: {question.message}", request_id=call.request.request_id)
         call.task.add_done_callback(lambda _task: self._finish_unattended(call))
 
     def _finish_unattended(self, call: CallInProgress):
@@ -396,7 +410,7 @@ class MCPPermissionClient:
         roots = self._roots_answered_since(call.asked_before)
         try:
             result = call.task.result()
-        except (McpError, OSError) as e:
+        except (MCPError, OSError) as e:
             detail = f"MCP error: {e}"
             self.log_audit(request, "ERROR", detail)
             error = [TextContent(type="text", text=detail)]
@@ -404,13 +418,13 @@ class MCPPermissionClient:
         except BaseException:
             self.log_audit(request, "ERROR", "call failed before the server responded")
             raise
-        if result.isError:
+        if result.is_error:
             first = result.content[0] if result.content else None
             detail = first.text if isinstance(first, TextContent) else "server reported an error"
             self.log_audit(request, "ERROR", detail)
         else:
             self.log_audit(request, "COMPLETED", "")
-        return ToolOutcome(request, "ALLOWED", call.reason, result.content, result.isError,
+        return ToolOutcome(request, "ALLOWED", call.reason, result.content, result.is_error,
                            roots, call.inputs)
 
     async def answer_input(self, input_id: str, action: str,
@@ -427,8 +441,8 @@ class MCPPermissionClient:
             errors = schema_errors(question.schema, content or {})
             if errors:
                 raise InputInvalid(errors)
-        # If the server has already given up (timeout), it ignores this answer and the call's
-        # result says so; the protocol gives the client no signal before it answers.
+        # When the server gives up (timeout) it cancels the question, and _on_elicitation closes it
+        # here, so a late answer raises KeyError below; the call's result gives the server's reason.
         del self._open_questions[input_id]
         if question.answer.done():  # closed meanwhile (the client stopped waiting)
             raise KeyError(input_id)

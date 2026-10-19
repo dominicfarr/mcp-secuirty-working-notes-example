@@ -12,7 +12,7 @@ import anyio
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.elicitation import CancelledElicitation, DeclinedElicitation
-from mcp.shared.exceptions import McpError
+from mcp.shared.exceptions import MCPError
 from mcp.types import ClientCapabilities, ElicitationCapability, RootsCapability
 from pydantic import BaseModel, Field, ValidationError
 from audit import AuditLog
@@ -114,8 +114,8 @@ async def client_roots(ctx: Context) -> list[Path] | None:
         return None
     try:
         with anyio.fail_after(ROOTS_TIMEOUT_SECONDS):
-            roots = await ctx.list_roots()
-    except (McpError, TimeoutError, ValueError) as e:
+            roots = (await ctx.session.list_roots()).roots
+    except (MCPError, TimeoutError, ValueError) as e:
         # ValueError includes pydantic's ValidationError: a malformed roots reply
         raise ToolError("Access denied: could not get the client's roots") from e
     paths = (file_uri_path(str(root.uri)) for root in roots)

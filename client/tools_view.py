@@ -191,6 +191,12 @@ def render_timeline(header: str, steps: list[tuple[str | None, str]], body: str 
     return markdown
 
 
+def server_text(text: str) -> str:
+    """Text a server supplied, as a Markdown code span: never a clickable link (a bare URL or
+    [text](url) would otherwise be one). Backticks become quotes so the span can't be closed."""
+    return f"`{text.replace('`', "'")}`"
+
+
 def timeline_for(outcome: ToolOutcome) -> str:
     """Step timeline for a request's current state."""
     request = outcome.request
@@ -220,11 +226,12 @@ def timeline_for(outcome: ToolOutcome) -> str:
         steps.append((None, "↩ Server asked the client for its roots (`roots/list`); "
                             f"client answered: {answered}"))
     for question, answer, content in outcome.inputs:
-        steps.append((None, f"⏸ Server asked for input (`elicitation/create`): {question}"))
+        steps.append((None, "⏸ Server asked for input (`elicitation/create`): "
+                            f"{server_text(question)}"))
         steps.append((None, answer_line(answer, content)))
     if outcome.input_request is not None:
         steps.append((None, "⏸ Server asked for input (`elicitation/create`): "
-                            f"{outcome.input_request.message}"))
+                            f"{server_text(outcome.input_request.message)}"))
         steps.append((None, "⏸ Waiting for your answer"))
         steps.append((TODO, "Result"))
         return render_timeline(header, steps)

@@ -3,8 +3,8 @@
 import asyncio
 
 import pytest
-from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData
+from mcp.shared.exceptions import MCPError
+from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS
 
 from helpers import CRASH_SERVER, SERVER_SCRIPT, WORKSPACE, FakeSession, client_log, outcome_text
 
@@ -23,8 +23,7 @@ async def test_unreachable_server_is_reported_not_raised(make_app):
 @pytest.mark.anyio
 async def test_lost_connection_becomes_an_error_outcome(make_client):
     client, _ = make_client({"read_file": "allow"})
-    client.session = FakeSession(raises=McpError(ErrorData(code=-32000,
-                                                           message="Connection closed")))
+    client.session = FakeSession(raises=MCPError(-32000, "Connection closed"))
     outcome = await client.request_tool("read_file", {"filepath": "a.txt"})
     assert outcome.is_error and "Connection closed" in outcome_text(outcome)
     assert client_log()[-1]["outcome"] == "ERROR"
@@ -51,3 +50,13 @@ async def test_interrupted_request_does_not_steal_the_next_question(make_app):
     paused = await asyncio.wait_for(app.request_tool("delete_file", {"filepath": "a.txt"}), 15)
     assert paused.input_request is not None, "the question reached its own call"
     await app.answer_input(paused.input_request.input_id, "decline")
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_client_speaks_the_handshake_protocol(make_app):
+    # Roots and elicitation work as Part 1 describes only on handshake-era protocols; 2026-07-28
+    # replaces them with multi round-trip requests
+    app = make_app()
+    await app.list_tools()
+    assert app.protocol_version in HANDSHAKE_PROTOCOL_VERSIONS, app.protocol_version

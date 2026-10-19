@@ -24,6 +24,14 @@ The project is organised by threat rather than by MCP primitive:
 - **Part 2: model in the loop (`client/host.py`, planned).** The same client, server and policies with an LLM making the calls. Covers the risks that only exist when a model reads what a server sends: tool poisoning, prompt injection through tool results, resources and prompts, and changed tool definitions. Resources and prompts are covered here, as injection routes.
 - **Part 3: remote-server authorization (separate repo, not started).** OAuth and token handling for MCP servers over HTTP.
 
+### Versions
+
+Part 1 was written against mcp 1.16 and fastmcp 2.12, at commit `03a9398`; the [blog series](https://www.domfarr.com/2026/10/01/mcp-security.html) links to that commit. The repo now runs mcp 2.3, fastmcp 4.1 and gradio 6, and the client speaks the MCP protocol revision **2025-11-25** (it connects with the `initialize` handshake; `test_client_speaks_the_handshake_protocol` fails if that changes).
+
+MCP 2026-07-28 removes the handshake and replaces the server's mid-call `roots/list` and `elicitation/create` requests with multi round-trip requests: the tool returns `input_required` and the client re-sends the call with the answers. That changes how roots and elicitation work, so it is planned as its own step rather than folded into an upgrade.
+
+The client declares URL-mode elicitation (mcp 2.3 always does) but declines every URL-mode request and records the URL in its audit log; it only presents forms, and shows any text a server supplies as plain text, never as a clickable link.
+
 ### Layout
 
 The client and server are kept in separate folders, as they would be separate parties in a real deployment:
@@ -47,6 +55,8 @@ git config core.hooksPath .githooks   # run lint and tests before every push
 ```
 
 `requirements.txt` holds the runtime packages (`openai` is only needed for `client/host.py`); `requirements-dev.txt` adds `pytest`, `pylint` and `coverage`.
+
+Upgrading an existing venv from fastmcp 2.x: fastmcp 4 ships its code in `fastmcp-slim`, and pip removes the old package's files after installing it, leaving `ImportError: cannot import name 'Context' from 'fastmcp'`. Repair it with `pip install --force-reinstall --no-deps fastmcp-slim==4.1.1`, or create a fresh venv.
 
 CI installs from `requirements-dev.lock` instead: every package, including transitive ones, pinned with its hashes and installed only from wheels, so no package's setup script runs. After changing either requirements file, regenerate the lock (CI fails if a pinned version is missing from it, for example on a Dependabot PR):
 

@@ -101,6 +101,18 @@ def test_timeline_shows_each_step():
         assert line in full, line
 
 
+def test_server_text_is_never_a_link():
+    # Server-supplied text reaches the timeline's Markdown as a code span: rendered as Markdown,
+    # a bare URL or [text](url) would become a clickable link. A backtick can't end the span.
+    message = "Sign in `now` [here](https://evil.example/a) [url mode: https://evil.example/login]"
+    request = ToolRequest("ab12", "delete_file", {"filepath": "a.txt"})
+    shown = timeline_for(ToolOutcome(request, "ALLOWED", "policy: allow", None, False, None,
+                                     [(message, INPUT_AUTO_DECLINED, None)]))
+    assert ("`Sign in 'now' [here](https://evil.example/a) "
+            "[url mode: https://evil.example/login]`") in shown
+    assert shown.count("https://evil.example") == 2  # both inside that code span
+
+
 def test_form_is_generated_from_the_schema():
     schema = {"type": "object", "required": ["name", "level"], "properties": {
         "name": {"type": "string", "title": "Name", "minLength": 2, "maxLength": 10,
@@ -131,8 +143,10 @@ def test_audit_tables_are_stacked():
 
 
 def test_colours_carry_meaning():
+    # gradio 6 applies the theme and CSS at launch, so check what main() launches with
+    assert app_module.LAUNCH_SETTINGS["theme"].primary_500 == gr.themes.colors.blue.c500
+    assert ".approve-btn" in app_module.LAUNCH_SETTINGS["css"]
     ui = app_module.MCPPermissionClientApp("unused.py").create_interface()
-    assert ui.theme.primary_500 == gr.themes.colors.blue.c500
     buttons = {c["props"].get("value"): c["props"] for c in ui.get_config_file()["components"]
                if c["type"] == "button"}
     assert "approve-btn" in buttons["Approve"]["elem_classes"]
