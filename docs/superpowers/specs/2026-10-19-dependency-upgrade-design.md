@@ -11,11 +11,12 @@ without changing any Part 1 guarantee or anything the Part 1 blog series quotes.
 Part 2 is split into sub-projects, each with its own spec, plan and build:
 
 1. **This upgrade.**
-2. LLM host: `client/host.py` rebuilt on `request_tool` / `approve` / `answer_input`.
-3. Attacks and defences: hostile server, one threat at a time.
-4. Part 2 blog series.
-5. Migration to the 2026-07-28 protocol revision (position in the order to be decided), with
-   its own bridge post.
+2. Migration to the 2026-07-28 protocol revision (multi round-trip requests), with a bridge post
+   linked from both series hubs. Ordered before the host (decided 2026-10-19) so Part 2 is built
+   on the current protocol from the start.
+3. LLM host: `client/host.py` rebuilt on `request_tool` / `approve` / `answer_input`.
+4. Attacks and defences: hostile server, one threat at a time.
+5. Part 2 blog series.
 
 Success: all Part 1 tests pass on the new versions; four new tests guard the protocol version,
 URL-mode elicitation, cancelled questions and links in server text;
@@ -44,7 +45,7 @@ A throwaway spike (2026-10-19, scratchpad only) tried three routes against the 7
   roots check: the server failed closed.
 
 Route chosen: **latest libraries on the handshake protocol** (route A). The protocol migration
-is sub-project 5.
+is sub-project 2.
 
 ## Design
 
