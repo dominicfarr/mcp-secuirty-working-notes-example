@@ -28,7 +28,7 @@ The project is organised by threat rather than by MCP primitive:
 
 The repo speaks MCP protocol revision **2026-07-28** only: the client connects with the version pinned, and the server refuses handshake-era clients (`test_client_speaks_2026_07_28`, `test_handshake_client_is_refused`). The server's questions use multi round-trip requests: a tool returns `input_required` with its questions and sealed state, and the client re-sends the call with the answers (see [How a tool call travels](#how-a-tool-call-travels)).
 
-Part 1 was written against mcp 1.16 and fastmcp 2.12 on the handshake protocol, at commit `03a9398`; the [blog series](https://www.domfarr.com/2026/10/01/mcp-security.html) links to that commit. `7c1324c` is the last handshake-era commit on current libraries (mcp 2.3, fastmcp 4.1, gradio 6).
+Part 1 was written against mcp 1.16 and fastmcp 2.12 on the handshake protocol, at commit `03a9398`; the [blog series](https://www.domfarr.com/2026/10/01/mcp-security.html) links to that commit. `7c1324c` is the last handshake-era commit on current libraries (mcp 2.3, fastmcp 4.1, gradio 6). What changed and why the guarantees still hold: [MCP stopped waiting](https://www.domfarr.com/2026/10/19/mcp-security-mrtr.html).
 
 MCP roots are deprecated as of 2026-07-28 (SEP-2577), so the folder the server may use is now server configuration: the client launches it with `--allowed-folder`.
 

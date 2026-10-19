@@ -157,7 +157,7 @@ red.
   for input, and the reference moved to it.") and of the **roots post** ("Roots are deprecated as
   of MCP 2026-07-28 (SEP-2577); new code should pass folders through server configuration."). Each
   links to the bridge post once it exists; until then, to the README's Versions section. The
-  other three posts are untouched.
+  other three posts are untouched. (Now linked to the bridge post, https://www.domfarr.com/2026/10/19/mcp-security-mrtr.html.)
 - Spec and plan; project memory.
 
 ### 8. Refined while planning (each verified with a throwaway probe, 2026-10-19)
