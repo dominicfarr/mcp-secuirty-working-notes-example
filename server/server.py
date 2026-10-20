@@ -96,11 +96,15 @@ def audited(func):
 
 
 def resolve_in_workspace(filepath: str) -> Path:
-    """Resolve filepath under WORKSPACE_DIR, rejecting paths that escape it (e.g. '../')."""
-    base = WORKSPACE_DIR.resolve()
-    file_path = (WORKSPACE_DIR / filepath).resolve()
-    if not file_path.is_relative_to(base):
+    """Resolve filepath under WORKSPACE_DIR, rejecting paths that escape it (e.g. '../', an
+    absolute path, or a symlink pointing out)."""
+    # realpath resolves '..' and symlinks; commonpath then requires the result to be inside the
+    # workspace. (The idiom static analysers recognise as a path-traversal check.)
+    base = os.path.realpath(WORKSPACE_DIR)
+    resolved = os.path.realpath(os.path.join(base, filepath))
+    if os.path.commonpath((base, resolved)) != base:
         raise ToolError(f"Access denied: {filepath} is outside the workspace")
+    base, file_path = Path(base), Path(resolved)
     # "", "." or a folder would otherwise reach the tools as a directory
     if file_path == base or file_path.is_dir():
         raise ToolError(f"'{filepath}' is not a file path" if filepath
