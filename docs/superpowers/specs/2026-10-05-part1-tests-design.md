@@ -139,7 +139,7 @@ tests (GUI tests call handlers and inspect the interface configuration), and `cl
 
 `.github/workflows/tests.yml`:
 - On push and pull request to `main`.
-- Matrix: `ubuntu-latest` and `macos-latest`, Python 3.13.
+- Matrix: `ubuntu-24.04` (pinned; was `ubuntu-latest` until that label began moving to Ubuntu 26) and `macos-latest`, Python 3.13.
 - Steps: check out; set up Python; check every `==` pin in the requirements files is in
   `requirements-dev.lock`; `pip install --require-hashes --only-binary :all: -r
   requirements-dev.lock` (hashed, universal lock from `uv pip compile`); pylint on `client/` and
