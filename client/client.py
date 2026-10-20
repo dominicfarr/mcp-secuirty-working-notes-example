@@ -16,7 +16,6 @@ from mcp.client.stdio import get_default_environment
 from mcp.shared.exceptions import MCPError
 from mcp.types import (CONNECTION_CLOSED, INVALID_REQUEST, ElicitRequest, ElicitRequestFormParams,
                        ElicitRequestParams, ElicitResult, InputRequiredResult, TextContent)
-from pydantic import AnyUrl
 from permissions import PERMISSIONS_FILE, load_permissions
 from audit import AuditLog
 
@@ -102,6 +101,7 @@ class ToolRequest:
     request_id: str
     tool_name: str
     arguments: dict
+    source: str = "user"  # who asked: "user" (Tools tab) or "model" (Chat tab)
 
 
 @dataclass
@@ -252,7 +252,12 @@ class MCPPermissionClient:
     def log_audit(self, request: ToolRequest, decision: str, reason: str = ""):
         """Log a decision or outcome for a request to the client audit log."""
         self.audit_log.record(request.tool_name, request.arguments, decision, reason,
-                              request_id=request.request_id)
+                              request_id=request.request_id, source=request.source)
+
+    def record_not_sent(self, tool_name: str, arguments: dict, detail: str, source: str):
+        """Audit a call that was never sent because it couldn't be (unknown tool, bad
+        arguments): evidence of what was attempted."""
+        self.audit_log.record(tool_name, arguments, "NOT SENT", detail, source=source)
 
     async def set_folder(self, path: str | Path) -> Path:
         """Set the folder the server is launched with (--allowed-folder) and audit it.
@@ -308,7 +313,8 @@ class MCPPermissionClient:
             return
         call.inputs.append((question.message, "cancel", None))
         self.audit_log.record(call.request.tool_name, {}, "INPUT CANCELLED",
-                              f"{reason}: {question.message}", request_id=call.request.request_id)
+                              f"{reason}: {question.message}", request_id=call.request.request_id,
+                              source=call.request.source)
         call.task.add_done_callback(lambda _task: self._finish_unattended(call))
 
     def _finish_unattended(self, call: CallInProgress):
@@ -322,9 +328,12 @@ class MCPPermissionClient:
             result = await session.list_tools()
         return result.tools
 
-    async def request_tool(self, tool_name: str, arguments: dict | None = None) -> ToolOutcome:
-        """Check a tool call against policy: send it, refuse it, or hold it for approval."""
-        request = ToolRequest(uuid.uuid4().hex[:8], tool_name, copy.deepcopy(arguments or {}))
+    async def request_tool(self, tool_name: str, arguments: dict | None = None,
+                           source: str = "user") -> ToolOutcome:
+        """Check a tool call against policy: send it, refuse it, or hold it for approval.
+        source records who asked; it never changes the decision."""
+        request = ToolRequest(uuid.uuid4().hex[:8], tool_name, copy.deepcopy(arguments or {}),
+                              source)
         permission = self.check_permission(tool_name, request.arguments)
 
         if permission not in POLICIES:
@@ -418,7 +427,8 @@ class MCPPermissionClient:
                 call.inputs.append((question.message, INPUT_AUTO_DECLINED, None))
                 self.audit_log.record(call.request.tool_name, {}, INPUT_OUTCOMES["decline"],
                                       f"{INPUT_AUTO_DECLINED}: {question.message}",
-                                      request_id=call.request.request_id)
+                                      request_id=call.request.request_id,
+                                      source=call.request.source)
                 continue
             self._open_questions[question.input_id] = (question, call)
             return ToolOutcome(call.request, "ALLOWED", call.reason, rounds=list(call.rounds),
@@ -468,7 +478,8 @@ class MCPPermissionClient:
         if question.answer.done():  # closed meanwhile (the client stopped waiting)
             raise KeyError(input_id)
         self.audit_log.record(call.request.tool_name, content or {}, INPUT_OUTCOMES[action],
-                              question.message, request_id=call.request.request_id)
+                              question.message, request_id=call.request.request_id,
+                              source=call.request.source)
         call.inputs.append((question.message, action, content))
         question.answer.set_result(ElicitResult(action=action, content=content))
         return await self._follow(call)
@@ -480,9 +491,14 @@ class MCPPermissionClient:
         return result.resources
 
     async def read_resource(self, uri: str):
-        """Read a resource by URI."""
-        async with self._server_call() as session:
-            result = await session.read_resource(uri=AnyUrl(uri))
+        """Read a resource by URI; the user chose it. Audited either way."""
+        try:
+            async with self._server_call() as session:
+                result = await session.read_resource(uri=uri)
+        except (MCPError, OSError, ValueError) as e:
+            self.audit_log.record("(resource)", {"uri": uri}, "ERROR", str(e), source="user")
+            raise
+        self.audit_log.record("(resource)", {"uri": uri}, "READ", "", source="user")
         return result.contents
 
     async def list_prompts(self):
@@ -492,11 +508,17 @@ class MCPPermissionClient:
         return result.prompts
 
     async def get_prompt(self, prompt_name: str, arguments: dict | None = None):
-        """Get a rendered prompt template."""
+        """Get a rendered prompt template; the user chose it. Audited either way."""
         if arguments is None:
             arguments = {}
-        async with self._server_call() as session:
-            result = await session.get_prompt(name=prompt_name, arguments=arguments)
+        record = {"name": prompt_name, **arguments}
+        try:
+            async with self._server_call() as session:
+                result = await session.get_prompt(name=prompt_name, arguments=arguments)
+        except (MCPError, OSError, ValueError) as e:  # ValueError: arguments that aren't text
+            self.audit_log.record("(prompt)", record, "ERROR", str(e), source="user")
+            raise
+        self.audit_log.record("(prompt)", record, "READ", "", source="user")
         return result.messages
 
     async def cleanup(self):

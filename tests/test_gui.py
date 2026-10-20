@@ -2,13 +2,15 @@
 
 import json
 import re
+from pathlib import Path
 
 import gradio as gr
 import pytest
 
 import app as app_module
+import host as host_module
 from client import DEFAULT_ROOT, INPUT_AUTO_DECLINED, ToolOutcome, ToolRequest
-from helpers import WORKSPACE, select_row
+from helpers import SERVER_SCRIPT, WORKSPACE, ScriptedModel, calls, says, select_row
 from tools_view import WHOLE_DISK, form_content, form_fields, timeline_for
 
 
@@ -152,3 +154,70 @@ def test_colours_carry_meaning():
                if c["type"] == "button"}
     assert "approve-btn" in buttons["Approve"]["elem_classes"]
     assert buttons["Reject"]["variant"] == "stop"
+
+
+def test_host_adds_a_chat_tab_before_part_1_tabs():
+    app = host_module.MCPPermissionHostApp("unused.py", model=ScriptedModel())
+    labels = [c["props"]["label"] for c in config(app)["components"] if c["type"] == "tabitem"]
+    assert labels == ["Chat", "Tools", "Permissions", "Audit"]
+
+
+def test_part_1_app_has_no_llm_imports():
+    imports = [line for line in Path(app_module.__file__).read_text().splitlines()
+               if line.startswith(("import ", "from "))]
+    assert not [line for line in imports if line.split()[1] in ("openai", "agent", "model")]
+
+
+def test_host_opens_without_a_model(monkeypatch):
+    monkeypatch.setenv("HOST_MODEL_BASE_URL", "http://127.0.0.1:9/v1")  # nothing listens
+    app = host_module.MCPPermissionHostApp("unused.py")
+    assert config(app)  # builds; no connection is attempted until a turn
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_chat_shows_tool_steps_and_reply(make_app):
+    (WORKSPACE / "a.txt").write_text("hello")
+    make_app({"read_file": "allow"})  # writes the permissions
+    app = host_module.MCPPermissionHostApp(
+        SERVER_SCRIPT, model=ScriptedModel(calls("read_file", {"filepath": "a.txt"}),
+                                           says("It says hello.")))
+    try:
+        chat, status, *_ = await app.gui_chat_send("what's in a.txt?")
+    finally:
+        await app.cleanup()
+    shown = [m["content"] for m in chat]
+    assert shown[0] == "what's in a.txt?" and shown[-1] == "It says hello."
+    assert any("read_file" in line and "`hello`" in line for line in shown)
+    assert status == ""
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_approval_taken_elsewhere_is_reported(make_app):
+    make_app({"write_file": "ask"})
+    app = host_module.MCPPermissionHostApp(
+        SERVER_SCRIPT, model=ScriptedModel(calls("write_file", {"filepath": "b.txt",
+                                                                "content": "x"})))
+    try:
+        await app.gui_chat_send("write b.txt")
+        shown = app.agent.paused.request.request_id
+        app.reject(shown)  # e.g. from the Tools tab
+        _, status, *_ = await app.gui_chat_approve(shown)
+        assert "not pending" in status
+        await app.gui_chat_new()
+        assert app.agent.paused is None
+    finally:
+        await app.cleanup()
+
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_prompt_with_nothing_picked_is_explained():
+    app = host_module.MCPPermissionHostApp(SERVER_SCRIPT, model=ScriptedModel())
+    try:
+        chat, status, *_ = await app.gui_chat_prompt(None, "{}")
+    finally:
+        await app.cleanup()
+    assert chat == [] and "Pick a prompt" in status

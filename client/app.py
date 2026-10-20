@@ -69,6 +69,7 @@ def field_widget(form_field: FormField):
 
 class MCPPermissionClientApp(MCPPermissionClient):
     """GUI client application with permission management interface."""
+    APP_TITLE = "MCP Permission Client"
 
     def __init__(self, server_script: str):
         super().__init__(server_script)
@@ -183,21 +184,23 @@ class MCPPermissionClientApp(MCPPermissionClient):
     def create_interface(self):
         """Create the Gradio interface with permission management."""
 
-        with gr.Blocks(title="MCP Permission Client") as interface:
-            gr.Markdown("""
-            # MCP Permission Client
+        with gr.Blocks(title=self.APP_TITLE) as interface:
+            gr.Markdown(f"""
+            # {self.APP_TITLE}
             Manage permissions, view audit logs, and interact with MCP tools securely.
             """)
 
             with gr.Tabs():
-                with gr.Tab("Tools"):
-                    self._build_tools_tab(interface)
-                with gr.Tab("Permissions"):
-                    self._build_permissions_tab(interface)
-                with gr.Tab("Audit"):
-                    self._build_audit_tab(interface)
+                for label, build in self._tabs():
+                    with gr.Tab(label):
+                        build(interface)
 
         return interface
+
+    def _tabs(self) -> list:
+        """(label, builder) for each tab, in order; the Part 2 host adds its Chat tab."""
+        return [("Tools", self._build_tools_tab), ("Permissions", self._build_permissions_tab),
+                ("Audit", self._build_audit_tab)]
 
     def _build_tools_tab(self, interface: gr.Blocks):
         """Build the Tools tab: pick a tool, send a request, watch the client policy decide."""
@@ -219,11 +222,7 @@ class MCPPermissionClientApp(MCPPermissionClient):
         pending_id = gr.State("")
 
         timeline = gr.Markdown()
-        with gr.Group(visible=False) as approval_group:
-            approval_text = gr.Markdown()
-            with gr.Row():
-                approve_btn = gr.Button("Approve", variant="primary", elem_classes=["approve-btn"])
-                reject_btn = gr.Button("Reject", variant="stop")
+        approval_group, approval_text, approve_btn, reject_btn = self._build_approval_card()
 
         flow = []  # filled below; the input card's buttons are wired before the list is complete
         input_card = self._build_input_card(flow)
@@ -236,6 +235,16 @@ class MCPPermissionClientApp(MCPPermissionClient):
         approve_btn.click(fn=self.gui_approve, inputs=pending_id, outputs=flow)
         reject_btn.click(fn=self.gui_reject, inputs=pending_id, outputs=flow)
 
+    @staticmethod
+    def _build_approval_card():
+        """The approval card (hidden until a request waits): text, Approve, Reject."""
+        with gr.Group(visible=False) as approval_group:
+            approval_text = gr.Markdown()
+            with gr.Row():
+                approve_btn = gr.Button("Approve", variant="primary", elem_classes=["approve-btn"])
+                reject_btn = gr.Button("Reject", variant="stop")
+        return approval_group, approval_text, approve_btn, reject_btn
+
     def _build_tool_table(self, interface: gr.Blocks):
         """The tool table (loaded on page load, with Refresh) and its status line."""
         tools_status = gr.Markdown(visible=False)
@@ -247,9 +256,11 @@ class MCPPermissionClientApp(MCPPermissionClient):
         refresh_btn.click(fn=self.gui_load_tools, outputs=[tool_table, tools_status])
         return tool_table
 
-    def _build_input_card(self, flow: list):
+    def _build_input_card(self, flow: list, answer=None):
         """The card for a server's question (elicitation): a form generated from its schema.
-        Returns its outputs in flow order: question, card, heading, schema, errors."""
+        answer handles the user's reply (default: the Tools tab's). Returns its outputs in flow
+        order: question, card, heading, schema, errors."""
+        answer = answer or self.gui_answer_input
         question_state = gr.State(None)
         with gr.Group(visible=False) as input_group:
             heading = gr.Markdown()
@@ -270,14 +281,13 @@ class MCPPermissionClientApp(MCPPermissionClient):
                     cancel_btn = gr.Button("Cancel", variant="secondary")
 
                 async def accept(*values):
-                    return await self.gui_answer_input(question["id"], "accept",
-                                                       form_content(fields, values))
+                    return await answer(question["id"], "accept", form_content(fields, values))
 
                 async def decline():
-                    return await self.gui_answer_input(question["id"], "decline")
+                    return await answer(question["id"], "decline")
 
                 async def cancel():
-                    return await self.gui_answer_input(question["id"], "cancel")
+                    return await answer(question["id"], "cancel")
 
                 accept_btn.click(accept, inputs=widgets, outputs=flow)
                 decline_btn.click(decline, outputs=flow)

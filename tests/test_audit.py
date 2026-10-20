@@ -5,7 +5,7 @@ import json
 import pytest
 
 from audit import AuditLog  # the client's copy: only client/ is importable
-from audit_view import audit_rows
+from audit_view import CLIENT_COLUMNS, audit_rows
 from helpers import (CLIENT_LOG, SERVER_LOG, WORKSPACE, call_server, client_log,
                      elicitation_answer, server_log)
 
@@ -77,6 +77,17 @@ def test_unreadable_log_lines_are_shown_not_hidden(tmp_path):
     rows = audit_rows(path, with_request_id=False)
     assert rows[0][-1] == "unreadable line 2" and rows[1][1] == "t"
 
+
+
+def test_client_table_shows_who_asked(tmp_path):
+    path = tmp_path / "client_audit.log"
+    path.write_text('{"ts": "2026-10-20T12:00:00+00:00", "tool": "t", "args": {}, '
+                    '"outcome": "ALLOWED", "detail": "", "request_id": "r1", "source": "model"}\n'
+                    '{"ts": "2026-10-20T12:00:01+00:00", "tool": "(folder)", "args": {}, '
+                    '"outcome": "FOLDER CONFIGURED", "detail": ""}\n')
+    rows = audit_rows(path, with_request_id=True)
+    assert CLIENT_COLUMNS[1:4] == ["Request", "Source", "Tool"]
+    assert rows[1][1:4] == ["r1", "model", "t"] and rows[0][2] == ""
 
 @pytest.mark.integration
 @pytest.mark.anyio

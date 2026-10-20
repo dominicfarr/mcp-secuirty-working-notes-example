@@ -222,15 +222,8 @@ def confirmed(filepath: str, answer: ElicitResult) -> DeleteConfirmation:
     return confirmation
 
 
-@mcp.tool()
-@audited
-def read_file(filepath: str) -> str:
-    """
-    Read a text file from the workspace.
-
-    Args:
-        filepath: Path to the file relative to the workspace
-    """
+def read_text_file(filepath: str) -> str:
+    """A UTF-8 text file inside the allowed folder. Raises ToolError with a readable reason."""
     file_path = resolve_allowed(filepath)
     try:
         return file_path.read_text(encoding="utf-8")
@@ -240,6 +233,18 @@ def read_file(filepath: str) -> str:
         raise ToolError(f"Error reading file {filepath}: not valid UTF-8 text") from e
     except OSError as e:
         raise ToolError(f"Error reading file {filepath}: {e.strerror}") from e
+
+
+@mcp.tool()
+@audited
+def read_file(filepath: str) -> str:
+    """
+    Read a text file from the workspace.
+
+    Args:
+        filepath: Path to the file relative to the workspace
+    """
+    return read_text_file(filepath)
 
 
 @mcp.tool()
@@ -306,8 +311,21 @@ def execute_command(command: str) -> str:
     return f"Simulated execution of command: {command}\n(Actual execution disabled for security)"
 
 
+# A resource is application-controlled: the user picks it and the client adds it to the
+# model's context; the model can't fetch it. Same allowed-folder rule as read_file.
+@mcp.resource("workspace://{filepath*}", mime_type="text/plain")
+@audited
+def workspace_file(filepath: str) -> str:
+    """A text file in the workspace, for the user to attach to a conversation.
+
+    Args:
+        filepath: Path to the file relative to the workspace
+    """
+    return read_text_file(filepath)
+
+
 @mcp.prompt()
-def security_review(operation: str, risk_level: str) -> list[dict]:
+def security_review(operation: str, risk_level: str) -> str:
     """
     Generate a security review prompt for an operation.
 
@@ -315,10 +333,8 @@ def security_review(operation: str, risk_level: str) -> list[dict]:
         operation: The operation to review
         risk_level: The risk level (LOW, MEDIUM, HIGH, CRITICAL)
     """
-    return [
-        {
-            "role": "user",
-            "content": f"""Review this operation for security implications:
+    # A string is one user message (fastmcp 4 no longer accepts plain dicts as messages)
+    return f"""Review this operation for security implications:
 
 Operation: {operation}
 Risk Level: {risk_level}
@@ -330,8 +346,6 @@ Please analyze:
 4. Should this operation require user approval?
 5. What should be logged for audit purposes?
 """
-        }
-    ]
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ it runs as a child process, as it does in the app.
 
 import asyncio
 import contextlib
+import copy
 import json
 import os
 import shutil
@@ -141,3 +142,35 @@ def elicitation_answer(action, content=None, delay=0, seen=None):
 def select_row(name):
     """The event Gradio sends when a tool table row is clicked."""
     return gr.SelectData(None, {"index": [0, 0], "value": name, "row_value": [name, "", ""]})
+
+
+class ScriptedModel:
+    """Stands in for the LLM: returns pre-written replies in order (an exception is raised) and
+    records a copy of every context it was sent, so tests can check what the model saw."""
+    name = "scripted"
+
+    def __init__(self, *replies):
+        self.replies, self.sent, self.tools_sent = list(replies), [], []
+
+    async def complete(self, messages, tools):
+        self.sent.append(copy.deepcopy(messages))
+        self.tools_sent.append(tools)
+        if not self.replies:
+            raise RuntimeError("the script has no more replies")
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+def says(text):
+    """A scripted reply with text only."""
+    from model import AssistantMessage  # pylint: disable=import-outside-toplevel
+    return AssistantMessage(text=text)
+
+
+def calls(name, arguments, call_id="c1"):
+    """A scripted reply that calls one tool; arguments as a dict, or raw text to send as is."""
+    from model import AssistantMessage, ToolCall  # pylint: disable=import-outside-toplevel
+    text = arguments if isinstance(arguments, str) else json.dumps(arguments)
+    return AssistantMessage(tool_calls=(ToolCall(call_id, name, text),))

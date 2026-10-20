@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-CLIENT_COLUMNS = ["Time (UTC)", "Request", "Tool", "Arguments", "Outcome", "Detail"]
+CLIENT_COLUMNS = ["Time (UTC)", "Request", "Source", "Tool", "Arguments", "Outcome", "Detail"]
 SERVER_COLUMNS = ["Time (UTC)", "Tool", "Arguments", "Outcome", "Detail"]
 
 
@@ -24,7 +24,7 @@ def audit_rows(path: str | Path, with_request_id: bool) -> list[list[str]]:
         except (ValueError, KeyError, TypeError):
             row = ["", "", "", "?", f"unreadable line {number}"]
             entry = {}
-        if with_request_id:
-            row.insert(1, entry.get("request_id", ""))
+        if with_request_id:  # the client's log: which request, and who asked (user or model)
+            row[1:1] = [entry.get("request_id", ""), entry.get("source", "")]
         rows.append(row)
     return rows[::-1]

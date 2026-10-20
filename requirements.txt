@@ -3,5 +3,4 @@ fastmcp==4.1.1
 gradio==6.30.0
 pydantic==2.14.1
 jsonschema==4.26.0
-# only needed for client/host.py (Part 2)
-#openai==2.6.1
+openai==2.6.1

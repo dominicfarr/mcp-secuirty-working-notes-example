@@ -43,7 +43,7 @@ jobs:
           python -m pip install --require-hashes --only-binary :all: -r requirements-dev.lock
       - name: Lint client
         working-directory: client
-        run: python -m pylint --rcfile=../.pylintrc $(ls ./*.py | grep -v host.py)
+        run: python -m pylint --rcfile=../.pylintrc $(ls ./*.py)
       - name: Lint server
         working-directory: server
         run: python -m pylint --rcfile=../.pylintrc ./*.py

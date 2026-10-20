@@ -10,7 +10,7 @@ PYTHON=python3
 [ -x mcp_security_env/bin/python ] && PYTHON=mcp_security_env/bin/python
 
 echo "pre-push: lint client"
-(cd client && "../$PYTHON" -m pylint --rcfile=../.pylintrc $(ls ./*.py | grep -v host.py))
+(cd client && "../$PYTHON" -m pylint --rcfile=../.pylintrc $(ls ./*.py))
 
 echo "pre-push: lint server"
 (cd server && "../$PYTHON" -m pylint --rcfile=../.pylintrc ./*.py)
@@ -19,4 +19,4 @@ echo "pre-push: unit tests"
 "$PYTHON" -m pytest -x -q -m "not integration"
 
 echo "pre-push: integration tests"
-"$PYTHON" -m pytest -x -q -m integration
+"$PYTHON" -m pytest -x -q -m "integration and not live"

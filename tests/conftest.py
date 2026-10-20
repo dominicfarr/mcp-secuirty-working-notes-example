@@ -59,3 +59,15 @@ async def make_app():
     yield make
     for each in made:
         await each.cleanup()
+
+
+@pytest.fixture
+def make_agent(make_app):
+    """An agent driving a scripted model and a real client and server."""
+    import agent as agent_module  # pylint: disable=import-outside-toplevel
+
+    def make(*replies, permissions=None):
+        app = make_app(permissions)
+        model = helpers.ScriptedModel(*replies)
+        return agent_module.Agent(app, model), app, model
+    return make
