@@ -21,6 +21,7 @@ SERVER_AUDIT_LOG = Path(__file__).resolve().parent.parent / "server" / "logs" / 
 
 # Height in pixels of each Audit tab table; longer logs scroll inside it.
 AUDIT_TABLE_HEIGHT = 320
+REFRESH_LABEL = "↻ Refresh"
 
 # Colour carries meaning: blue for neutral actions (the theme's primary colour), green to approve,
 # red to reject (Gradio's "stop" variant).
@@ -149,7 +150,7 @@ class MCPPermissionClientApp(MCPPermissionClient):
         return (gr.update(value=folder_display(self.folder, PROJECT_DIR)),
                 launch_line(self.folder))
 
-    async def gui_configure_permission(self, tool_name: str, policy: str):
+    def gui_configure_permission(self, tool_name: str, policy: str):
         """Configure permission for a tool."""
         if not tool_name:
             return "Please enter a tool name"
@@ -251,7 +252,7 @@ class MCPPermissionClientApp(MCPPermissionClient):
         tool_table = gr.Dataframe(
             headers=["Tool (server)", "Description (server)", "Policy (client)"],
             interactive=False, label="Tools (click a row to select)")
-        refresh_btn = gr.Button("↻ Refresh", size="sm")
+        refresh_btn = gr.Button(REFRESH_LABEL, size="sm")
         interface.load(fn=self.gui_load_tools, outputs=[tool_table, tools_status])
         refresh_btn.click(fn=self.gui_load_tools, outputs=[tool_table, tools_status])
         return tool_table
@@ -309,7 +310,7 @@ class MCPPermissionClientApp(MCPPermissionClient):
     def _build_permissions_tab(self, interface: gr.Blocks):
         """Build the Permissions tab: view and change this client's policy for each tool."""
         gr.Markdown("### Client permission policies")
-        refresh_btn = gr.Button("↻ Refresh", size="sm")
+        refresh_btn = gr.Button(REFRESH_LABEL, size="sm")
         perm_tool_name = gr.Dropdown(label="Tool Name", choices=[], allow_custom_value=True)
         perm_policy = gr.Radio(choices=["allow", "deny", "ask"], label="Permission Policy",
                                value="ask")
@@ -328,7 +329,7 @@ class MCPPermissionClientApp(MCPPermissionClient):
         gr.Markdown("### Audit logs\n"
                     "Each side keeps its own record. A request the client denies never reaches "
                     "the server, so it appears only in the client log.")
-        refresh_btn = gr.Button("↻ Refresh", size="sm")
+        refresh_btn = gr.Button(REFRESH_LABEL, size="sm")
         # Stacked at full width so long arguments and details stay readable; each table has a
         # fixed height and scrolls.
         gr.Markdown("**Client audit** (this client's own log, `client/client_audit.log`)")

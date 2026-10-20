@@ -53,12 +53,14 @@ class OpenAICompatibleModel:  # pylint: disable=too-few-public-methods
     def __init__(self, base_url: str | None = None, model: str | None = None,
                  api_key: str | None = None, client=None):
         self.name = model or os.environ.get("HOST_MODEL", DEFAULT_MODEL)
-        self.base_url = base_url or os.environ.get("HOST_MODEL_BASE_URL", DEFAULT_BASE_URL)
-        self._client = client or AsyncOpenAI(
-            base_url=self.base_url,
-            api_key=api_key or os.environ.get("HOST_MODEL_API_KEY", DEFAULT_API_KEY))
+        base_url = base_url or os.environ.get("HOST_MODEL_BASE_URL", DEFAULT_BASE_URL)
         if client is None:
-            self.base_url = self._client.base_url
+            client = AsyncOpenAI(
+                base_url=base_url,
+                api_key=api_key or os.environ.get("HOST_MODEL_API_KEY", DEFAULT_API_KEY))
+            base_url = str(client.base_url)  # as the SDK normalised it (trailing slash)
+        self.base_url = base_url
+        self._client = client
 
     async def complete(self, messages: list[dict], tools: list[dict]) -> AssistantMessage:
         """One chat completion; tools are sent only if there are any."""
