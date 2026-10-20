@@ -32,7 +32,7 @@ The tests are grouped by security control (`tests/test_permissions.py`, `test_ap
 
 `main` is the trunk and takes direct pushes, so the same checks also run locally first: `.githooks/pre-push` (enabled by the `core.hooksPath` line in Setup) runs pylint, then the unit tests, then the integration tests, and stops the push at the first failure. CI stays as the backstop for anything the hook can't catch, such as macOS-only failures or a `git push --no-verify`.
 
-A separate workflow (`.github/workflows/sonar.yml`, the **Quality Gate** badge) runs the tests under `coverage` (settings in `.coveragerc`) and sends the report to [SonarQube Cloud](https://sonarcloud.io/summary/new_code?id=dominicfarr_mcp-secuirty-working-notes-example), configured in `sonar-project.properties`. A failed quality gate fails that workflow, never the tests one. Coverage follows the server child process and maps the tests' temporary copy back to `client/` and `server/`. To see it locally:
+A separate workflow (`.github/workflows/sonar.yml`, the **Quality Gate** badge) runs the tests under `coverage` (settings in `.coveragerc`) and sends the report to [SonarQube Cloud](https://sonarcloud.io/summary/new_code?id=dominicfarr_mcp-secuirty-working-notes-example), configured in `sonar-project.properties`. A failed quality gate fails that workflow, never the tests one. One rule is ignored, narrowly: Sonar's path-injection rule (S2083) on `server/server.py`, a reviewed false positive; the reason and the tests that prove the path check are in `sonar-project.properties`. Coverage follows the server child process and maps the tests' temporary copy back to `client/` and `server/`. To see it locally:
 
 ```bash
 coverage run -m pytest && coverage combine && coverage report

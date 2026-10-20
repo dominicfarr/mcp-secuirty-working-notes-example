@@ -99,7 +99,7 @@ def resolve_in_workspace(filepath: str) -> Path:
     """Resolve filepath under WORKSPACE_DIR, rejecting paths that escape it (e.g. '../', an
     absolute path, or a symlink pointing out)."""
     # realpath resolves '..' and symlinks; commonpath then requires the result to be inside the
-    # workspace. (The idiom static analysers recognise as a path-traversal check.)
+    # workspace (the standard idiom for a path-traversal check)
     base = os.path.realpath(WORKSPACE_DIR)
     resolved = os.path.realpath(os.path.join(base, filepath))
     if os.path.commonpath((base, resolved)) != base:
