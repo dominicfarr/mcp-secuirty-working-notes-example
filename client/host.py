@@ -1,8 +1,8 @@
 """Part 2 host: the Part 1 app plus a Chat tab in which a model calls the server's tools.
 
 Every call the model makes goes through the same client as the Tools tab: policy, approval,
-audit, and the server's questions to the user. This is the baseline for Part 2's attacks: no
-LLM-specific defences yet (see README "Part 2: model in the loop")."""
+audit, and the server's questions to the user. Part 2's defences (agent.py) are switched in the
+Chat tab; with both off it is the baseline Part 2's attacks land on (see docs/part-2-host.md)."""
 
 import sys
 
@@ -17,6 +17,8 @@ from tools_view import parse_arguments, server_text
 
 # Beside the Part 1 app (7863), not instead of it
 HOST_LAUNCH_SETTINGS = {**LAUNCH_SETTINGS, "server_port": 7864}
+RULE_A_LABEL = "Rule A: writes ask after untrusted content"
+RULE_B_LABEL = "Rule B: no retry after a rejection"
 STEP_RESULT_CHARS = 120  # a step line shows the start of a result; the model gets all of it
 NOT_PENDING = ("⚠ That request is not pending any more (answered elsewhere?). "
                "Start a new chat to go on.")
@@ -56,7 +58,27 @@ class MCPPermissionHostApp(MCPPermissionClientApp):
         paused = self.agent.paused
         question = paused.input_request if paused is not None else None
         pending = paused.request if paused is not None and question is None else None
-        return (list(self.chat), status) + flow_outputs("", pending, question)[1:]
+        note = paused.note if pending is not None else ""
+        return (list(self.chat), status) + flow_outputs("", pending, question, note)[1:]
+
+    def gui_set_rule(self, name: str, on: bool):
+        """Switch Rule A ("a") or Rule B ("b"); applies from the next decision."""
+        setattr(self.agent, f"rule_{name}", bool(on))
+
+    def gui_load_rules(self) -> tuple[bool, bool]:
+        """The defences' current settings, so a reloaded page never shows a rule that is off as
+        on."""
+        return self.agent.rule_a, self.agent.rule_b
+
+    def _build_rule_switches(self, interface: gr.Blocks):
+        """One checkbox per defence, showing the agent's current setting (re-read on load)."""
+        boxes = []
+        with gr.Row():
+            for name, label in (("a", RULE_A_LABEL), ("b", RULE_B_LABEL)):
+                box = gr.Checkbox(label=label, value=getattr(self.agent, f"rule_{name}"))
+                box.change(lambda on, name=name: self.gui_set_rule(name, on), inputs=box)
+                boxes.append(box)
+        interface.load(fn=self.gui_load_rules, outputs=boxes)
 
     async def gui_chat_send(self, text: str):
         """Send the user's message and run the turn until it finishes or needs the user."""
@@ -146,8 +168,13 @@ class MCPPermissionHostApp(MCPPermissionClientApp):
         gr.Markdown(f"Model: `{self.model.name}`. Every tool call it makes meets the policy on "
                     "the Permissions tab, waits here for your approval when the policy is "
                     "*ask*, and is in the Audit tab with source `model`. Questions from the "
-                    "server come to you, never to the model. **Baseline:** no LLM-specific "
-                    "defences yet.")
+                    "server come to you, never to the model.")
+        gr.Markdown("**Defences** (decided by this client, not the model): Rule A makes every "
+                    "tool but `read_file` ask once the model has read untrusted content "
+                    "(a tool result, an attached resource, a server prompt), until New chat. "
+                    "Rule B refuses, unasked, a call you said no to if the model repeats it in "
+                    "the same turn. Turn them off to see the baseline.")
+        self._build_rule_switches(interface)
         chatbot = gr.Chatbot(label="Conversation", height=420)
         status = gr.Markdown()
         message = gr.Textbox(label="Message", lines=2)

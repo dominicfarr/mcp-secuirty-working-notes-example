@@ -1,9 +1,16 @@
 """The host's turn loop: a model calls tools, and every call goes through the client.
 
-This is Part 2's baseline: Part 1's controls only. The model sees every tool (denied ones too),
-tool descriptions and results reach it verbatim, and resources and prompts enter its context
-only when the user picks them. The server's questions go to the user and never into the model's
-context: the model sees only each call's final result."""
+The model sees every tool (denied ones too), tool descriptions and results reach it verbatim,
+and resources and prompts enter its context only when the user picks them. The server's
+questions go to the user and never into the model's context: the model sees only each call's
+final result.
+
+Part 2's defences sit on top of Part 1's controls, decided outside the model (on by default;
+both off is the baseline the attacks land on):
+- Rule A: once untrusted content (a tool result, an attached resource, a server prompt) has
+  entered the chat, every tool but a read-only one asks, until New chat.
+- Rule B: a call the user said no to (rejected, or the server's question declined or cancelled)
+  is refused unasked if the model repeats it identically in the same turn."""
 
 import contextlib
 import json
@@ -16,6 +23,7 @@ SYSTEM_PROMPT = "You help the user work with files in their workspace using the 
 TOOL_ROUNDS_MAX = 8  # robustness (cost, runaway loops), not a defence
 DENIED = "Denied by client policy"
 REJECTED = "Rejected by the user"
+RULE_B_REFUSED = "Rejected by the user earlier in this turn; not asked again"
 BUSY = "answer or reject the pending request first"
 RUNNING = "the model is still working on the last message"
 QUESTION_CLOSED = "Error: the server's question was closed before it was answered"
@@ -77,6 +85,13 @@ class Agent:
         self._tool_names: set[str] = set()
         self._steps: list[Step] = []
         self._running = False  # one turn at a time: the context must stay a valid sequence
+        self.rule_a = True  # changes ask once untrusted content is in the chat
+        # Whether server text (a tool result, an attached resource, a server prompt) has entered
+        # the model's context since New chat. Tracked whatever rule_a says, so switching the rule
+        # on later still covers what was read before.
+        self._untrusted = False
+        self.rule_b = True  # a call the user said no to isn't asked again in the same turn
+        self._refused: list[tuple[str, dict]] = []  # this turn's calls the user said no to
 
     async def send(self, text: str) -> TurnResult:
         """The user's message (with anything attached) starts a turn."""
@@ -123,6 +138,7 @@ class Agent:
                 await self.client.answer_input(paused.input_request.input_id, "cancel")
         self.messages = self.messages[:1]
         self._queue, self._attachments, self._rounds = [], [], 0
+        self._untrusted = False
 
     def drain_steps(self) -> list[Step]:
         """The tool steps since the last call, for the chat to show."""
@@ -143,6 +159,7 @@ class Agent:
         if self.paused is not None:
             return TurnResult(error=BUSY)
         content = "\n\n".join([*self._attachments, text])
+        self._untrusted = self._untrusted or bool(self._attachments)
         self._attachments = []
         self.messages.append({"role": "user", "content": content})
         return await self._start()
@@ -153,6 +170,7 @@ class Agent:
         for message in await self.client.get_prompt(name, arguments):
             text = getattr(message.content, "text", "")
             self.messages.append({"role": message.role, "content": text})
+            self._untrusted = True
         return await self._start()
 
     async def _approve(self, request_id: str) -> TurnResult:
@@ -164,6 +182,7 @@ class Agent:
         outcome = self._paused_on(question=False, shown_id=request_id)
         self.client.reject(outcome.request.request_id)
         self.paused = None
+        self._refused.append((outcome.request.tool_name, outcome.request.arguments))
         return await self._resume(REJECTED)
 
     async def _answer(self, input_id: str, action: str, content: dict | None) -> TurnResult:
@@ -174,10 +193,12 @@ class Agent:
         except KeyError:  # closed meanwhile: timed out, or the server restarted
             self.paused = None
             return await self._resume(QUESTION_CLOSED)
+        if action in ("decline", "cancel"):  # the user said no to this call
+            self._refused.append((outcome.request.tool_name, outcome.request.arguments))
         return await self._resume(self._settle(resumed))
 
     async def _start(self) -> TurnResult:
-        self._rounds = 0
+        self._rounds, self._refused = 0, []
         return await self._run()
 
     async def _run(self) -> TurnResult:
@@ -217,8 +238,11 @@ class Agent:
         if not isinstance(arguments, dict):
             self.client.record_not_sent(call.name, {}, "arguments were not valid JSON", "model")
             return "Error: arguments were not valid JSON"
-        return self._settle(await self.client.request_tool(call.name, arguments,
-                                                           source="model"))
+        if self.rule_b and (call.name, arguments) in self._refused:
+            self.client.refuse_repeat(call.name, arguments, "model")
+            return RULE_B_REFUSED
+        return self._settle(await self.client.request_tool(
+            call.name, arguments, source="model", untrusted_seen=self.rule_a and self._untrusted))
 
     def _settle(self, outcome: ToolOutcome) -> str | None:
         """The model's tool result for an outcome, or None (and paused) if the user is
@@ -233,6 +257,7 @@ class Agent:
             waiting = WAITING_ANSWER if outcome.input_request else WAITING_APPROVAL
             self._steps.append(Step(self._queue[0].name, self._queue[0].arguments_json, waiting))
             return None
+        self._untrusted = True  # the server's text is about to enter the model's context
         return result_text(outcome)
 
     async def _resume(self, result: str | None) -> TurnResult:

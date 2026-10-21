@@ -28,7 +28,7 @@ pytest                         # everything (about 1 minute)
 pytest -m "not integration"    # only the tests that don't start a server (seconds)
 ```
 
-The tests are grouped by security control (`tests/test_permissions.py`, `test_approval.py`, `test_audit.py`, `test_workspace.py`, `test_folder.py`, `test_elicitation.py`, `test_request_state.py`, `test_connection.py`, `test_gui.py`, and for Part 2 `test_host.py` and `test_model.py`) and each test is named after the guarantee it proves, so the files read as a list of what the project promises. `test_live_model.py` talks to a real model and is skipped unless `HOST_MODEL` is set (see [Part 2](part-2-host.md)). They run against a temporary copy of `client/` and `server/`, so they never touch your `workspace/`, logs or `permissions.json`. GitHub Actions runs pylint and the tests on Ubuntu and macOS for every push and pull request (`.github/workflows/tests.yml`, the **tests** badge).
+The tests are grouped by security control (`tests/test_permissions.py`, `test_approval.py`, `test_audit.py`, `test_workspace.py`, `test_folder.py`, `test_elicitation.py`, `test_request_state.py`, `test_connection.py`, `test_gui.py`, and for Part 2 `test_host.py`, `test_defences.py` and `test_model.py`) and each test is named after the guarantee it proves, so the files read as a list of what the project promises. `test_live_model.py` talks to a real model and is skipped unless `HOST_MODEL` is set (see [Part 2](part-2-host.md)). They run against a temporary copy of `client/` and `server/`, so they never touch your `workspace/`, logs or `permissions.json`. GitHub Actions runs pylint and the tests on Ubuntu and macOS for every push and pull request (`.github/workflows/tests.yml`, the **tests** badge).
 
 `main` is the trunk and takes direct pushes, so the same checks also run locally first: `.githooks/pre-push` (enabled by the `core.hooksPath` line in Setup) runs pylint, then the unit tests, then the integration tests, and stops the push at the first failure. CI stays as the backstop for anything the hook can't catch, such as macOS-only failures or a `git push --no-verify`.
 
@@ -48,6 +48,7 @@ client/      app.py, client.py, tools_view.py, permissions.py, audit.py
              permissions.json, client_audit.log
 server/      server.py, audit.py, logs/server_audit.log   (server-private)
 workspace/   the user's files: the only folder the server's file tools may use
+demo/        files for the Part 2 attack demo, copied into workspace/ (git-ignored) to use
 ```
 
 Each side has its own `audit.py`; the two copies write the same JSON-lines format so the logs can be correlated.

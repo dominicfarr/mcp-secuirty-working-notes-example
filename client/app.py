@@ -37,13 +37,13 @@ LAUNCH_SETTINGS = {"server_name": "127.0.0.1", "server_port": 7863, "theme": THE
 
 
 def flow_outputs(timeline: str, pending: ToolRequest | None = None,
-                 question: InputRequest | None = None):
+                 question: InputRequest | None = None, note: str = ""):
     """Outputs shared by send/approve/reject/answer: timeline, pending id, approval card, card
     text, Send; then the input card: question, visibility, heading, schema, errors."""
     return (timeline,
             pending.request_id if pending else "",
             gr.update(visible=pending is not None),
-            approval_card(pending) if pending else "",
+            approval_card(pending, note) if pending else "",
             gr.update(interactive=pending is None and question is None),
             {"id": question.input_id, "schema": question.schema} if question else None,
             gr.update(visible=question is not None),

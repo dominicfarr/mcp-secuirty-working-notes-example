@@ -31,6 +31,15 @@ REASON_USER_APPROVED = "user approved"
 REASON_POLICY_CHANGED = "policy changed to deny"
 REASON_REJECTED = "rejected by user"
 
+# Rule A (Part 2): once untrusted content is in the model's context, every tool but these asks.
+# The client's own list, not the server's annotations: the server is the party not trusted, so
+# a tool it adds or renames is treated as one that changes things.
+READ_ONLY_TOOLS = frozenset({"read_file"})
+REASON_RULE_A = "policy: allow, raised to ask: untrusted content in this chat"
+RULE_A_NOTE = "Asking because the model has read untrusted content in this chat (Rule A)"
+# Rule B (Part 2): a call the user said no to is refused, unasked, if repeated in the same turn
+REASON_RULE_B = "rule: rejected earlier this turn"
+
 # Client audit outcomes for the user's answer to a server's question (elicitation)
 INPUT_OUTCOMES = {"accept": "INPUT ACCEPTED", "decline": "INPUT DECLINED",
                   "cancel": "INPUT CANCELLED"}
@@ -115,6 +124,7 @@ class ToolOutcome:
     rounds: list[str] = field(default_factory=list)  # sealed states the server returned
     inputs: list = field(default_factory=list)  # (question, answer, content) per server question
     input_request: InputRequest | None = None  # set while the call waits for the user
+    note: str = ""  # why it is asking, beyond the policy (e.g. RULE_A_NOTE)
 
 
 @dataclass
@@ -259,6 +269,11 @@ class MCPPermissionClient:
         arguments): evidence of what was attempted."""
         self.audit_log.record(tool_name, arguments, "NOT SENT", detail, source=source)
 
+    def refuse_repeat(self, tool_name: str, arguments: dict, source: str):
+        """Audit a call refused unasked because the user said no to the same call this turn
+        (Rule B)."""
+        self.audit_log.record(tool_name, arguments, "DENIED", REASON_RULE_B, source=source)
+
     async def set_folder(self, path: str | Path) -> Path:
         """Set the folder the server is launched with (--allowed-folder) and audit it.
 
@@ -329,9 +344,11 @@ class MCPPermissionClient:
         return result.tools
 
     async def request_tool(self, tool_name: str, arguments: dict | None = None,
-                           source: str = "user") -> ToolOutcome:
+                           source: str = "user", untrusted_seen: bool = False) -> ToolOutcome:
         """Check a tool call against policy: send it, refuse it, or hold it for approval.
-        source records who asked; it never changes the decision."""
+        source records who asked; it never changes the decision. untrusted_seen (Rule A, set by
+        the host for model calls) raises allow to ask for any tool not known to be read-only;
+        it never lowers a decision."""
         request = ToolRequest(uuid.uuid4().hex[:8], tool_name, copy.deepcopy(arguments or {}),
                               source)
         permission = self.check_permission(tool_name, request.arguments)
@@ -346,11 +363,14 @@ class MCPPermissionClient:
             self.log_audit(request, "DENIED", "policy: deny")
             return ToolOutcome(request, "DENIED", "policy: deny")
 
-        if permission == "ask":
+        rule_a = untrusted_seen and tool_name not in READ_ONLY_TOOLS
+        if permission == "ask" or rule_a:
+            reason = REASON_RULE_A if permission == "allow" else REASON_AWAITING
             self.pending[request.request_id] = request
-            self.log_audit(request, "ASK", REASON_AWAITING)
+            self.log_audit(request, "ASK", reason)
             # Return a copy: the stored request must not be changeable through the outcome
-            return ToolOutcome(copy.deepcopy(request), "ASK", REASON_AWAITING)
+            return ToolOutcome(copy.deepcopy(request), "ASK", reason,
+                               note=RULE_A_NOTE if rule_a else "")
 
         return await self._send(request, f"policy: {permission}")
 

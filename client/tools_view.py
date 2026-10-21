@@ -262,8 +262,10 @@ def not_waiting_timeline(input_id: str) -> str:
     return render_timeline(f"Question {input_id}", [(FAIL, "This question is no longer waiting")])
 
 
-def approval_card(request: ToolRequest) -> str:
-    """Markdown for the approval card: the exact request the user is approving."""
+def approval_card(request: ToolRequest, note: str = "") -> str:
+    """Markdown for the approval card: the exact request the user is approving, and why it is
+    asking when that goes beyond the policy (note)."""
     return (f"**Approval needed: request `{request.request_id}`**\n\n"
             f"Tool: `{request.tool_name}`\n\n"
-            f"````json\n{json.dumps(request.arguments, indent=2)}\n````")
+            f"````json\n{json.dumps(request.arguments, indent=2)}\n````"
+            + (f"\n\n{note}" if note else ""))

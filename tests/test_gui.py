@@ -9,7 +9,7 @@ import pytest
 
 import app as app_module
 import host as host_module
-from client import DEFAULT_ROOT, INPUT_AUTO_DECLINED, ToolOutcome, ToolRequest
+from client import DEFAULT_ROOT, INPUT_AUTO_DECLINED, RULE_A_NOTE, ToolOutcome, ToolRequest
 from helpers import SERVER_SCRIPT, WORKSPACE, ScriptedModel, calls, says, select_row
 from tools_view import WHOLE_DISK, form_content, form_fields, timeline_for
 
@@ -221,3 +221,58 @@ async def test_prompt_with_nothing_picked_is_explained():
     finally:
         await app.cleanup()
     assert chat == [] and "Pick a prompt" in status
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_chat_card_says_why_rule_a_asks(make_app):
+    (WORKSPACE / "a.txt").write_text("hello")
+    make_app({"read_file": "allow", "write_file": "allow"})
+    app = host_module.MCPPermissionHostApp(
+        SERVER_SCRIPT, model=ScriptedModel(calls("read_file", {"filepath": "a.txt"}),
+                                           calls("write_file", {"filepath": "b.txt",
+                                                                "content": "x"}, "c2")))
+    try:
+        _, _, pending_id, _, card, *_ = await app.gui_chat_send("copy a.txt to b.txt")
+    finally:
+        await app.cleanup()
+    assert pending_id and RULE_A_NOTE in card
+
+
+def test_rules_default_on():
+    app = host_module.MCPPermissionHostApp("unused.py", model=ScriptedModel())
+    boxes = {c["props"]["label"]: c["props"]["value"] for c in config(app)["components"]
+             if c["type"] == "checkbox"}
+    assert app.agent.rule_a and app.agent.rule_b
+    assert boxes[host_module.RULE_A_LABEL] is True and boxes[host_module.RULE_B_LABEL] is True
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_rules_off_match_baseline(make_app):
+    (WORKSPACE / "a.txt").write_text("hello")
+    make_app({"read_file": "allow", "write_file": "allow"})
+    app = host_module.MCPPermissionHostApp(
+        SERVER_SCRIPT, model=ScriptedModel(calls("read_file", {"filepath": "a.txt"}),
+                                           calls("write_file", {"filepath": "b.txt",
+                                                                "content": "x"}, "c2"),
+                                           says("Copied.")))
+    try:
+        app.gui_set_rule("a", False)
+        app.gui_set_rule("b", False)
+        chat, *_ = await app.gui_chat_send("copy a.txt to b.txt")
+    finally:
+        await app.cleanup()
+    assert chat[-1]["content"] == "Copied." and (WORKSPACE / "b.txt").read_text() == "x"
+    assert not app.agent.rule_a and not app.agent.rule_b
+
+
+def test_rule_switches_show_the_current_setting_on_reload():
+    app = host_module.MCPPermissionHostApp("unused.py", model=ScriptedModel())
+    cfg = config(app)
+    boxes = {c["id"] for c in cfg["components"] if c["type"] == "checkbox"
+             and c["props"]["label"] in (host_module.RULE_A_LABEL, host_module.RULE_B_LABEL)}
+    loads = [d for d in cfg["dependencies"] if any(t[1] == "load" for t in d["targets"])]
+    assert any(set(d["outputs"]) == boxes for d in loads)
+    app.gui_set_rule("a", False)
+    assert app.gui_load_rules() == (False, True)

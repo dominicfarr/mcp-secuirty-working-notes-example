@@ -19,7 +19,7 @@ The project is organised by threat rather than by MCP primitive:
 | Part | What it shows | Read |
 |---|---|---|
 | **1. Deterministic controls** (`client/app.py`, no LLM) | Tool permission policies, binding human-in-the-loop approval, audit logs on both sides, server-side path validation, the allowed folder, and elicitation over multi round-trip requests | [docs/part-1-controls.md](docs/part-1-controls.md) |
-| **2. Model in the loop** (`client/host.py`) | The same client and server with an LLM making the calls. The host is built as a baseline; attacks that only exist when a model reads what a server sends (tool poisoning, prompt injection through results, resources and prompts, changed tool definitions) and their defences come next | [docs/part-2-host.md](docs/part-2-host.md) |
+| **2. Model in the loop** (`client/host.py`) | The same client and server with an LLM making the calls. With its defences off it is a baseline: a planted instruction in a file the model reads steers it into a write nobody asked for. Two client-side rules stop that: changes ask once untrusted content is in the chat, and a call you said no to isn't retried in the same turn. Tool poisoning and changed tool definitions are future work | [docs/part-2-host.md](docs/part-2-host.md) |
 | **3. Remote-server authorization** (separate repo, not started) | OAuth and token handling for MCP servers over HTTP | |
 
 ## Quick start
